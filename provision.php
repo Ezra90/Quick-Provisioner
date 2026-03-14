@@ -1,5 +1,5 @@
 <?php
-// provision.php - Quick Provisioner - Mustache Provisioning Engine
+// provision.php - Quick-Provisioner - Mustache Provisioning Engine
 include '/etc/freepbx.conf';
 require_once __DIR__ . '/MustacheEngine.php';
 
@@ -10,6 +10,27 @@ function qp_is_local_network() {
         return true;
     }
     return false;
+}
+
+function qp_log_access($status_code, $path, $mac, $extension, $resource_type) {
+    global $db;
+    try {
+        $db->query(
+            "INSERT INTO quickprovisioner_access_log (status_code, method, path, client_ip, mac, extension, resource_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                $status_code,
+                $_SERVER['REQUEST_METHOD'] ?? 'GET',
+                substr($path, 0, 255),
+                $_SERVER['REMOTE_ADDR'] ?? '',
+                $mac,
+                $extension,
+                $resource_type,
+                substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255)
+            ]
+        );
+    } catch (Exception $e) {
+        // Don't let log failures break provisioning
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +84,12 @@ foreach ($asset_routes as $prefix => $route) {
         $safe_filename = str_replace('"', '\\"', $filename);
         header('Content-Type: ' . $route['type']);
         header('Content-Disposition: attachment; filename="' . $safe_filename . '"');
+        // Determine resource type from prefix
+        $rt = 'asset';
+        if (strpos($prefix, 'ringtone') !== false) $rt = 'ringtone';
+        elseif (strpos($prefix, 'firmware') !== false) $rt = 'firmware';
+        elseif (strpos($prefix, 'phonebook') !== false) $rt = 'phonebook';
+        qp_log_access(200, $request_uri, null, null, $rt);
         readfile($file_path);
         exit;
     }
@@ -155,7 +182,7 @@ try {
     $userInfo = \FreePBX::Core()->getUser($ext);
     $display_name = $userInfo['name'] ?? $ext;
 } catch (Exception $e) {
-    error_log("Quick Provisioner: Error fetching user info for extension $ext - " . $e->getMessage());
+    error_log("Quick-Provisioner: Error fetching user info for extension $ext - " . $e->getMessage());
 }
 
 // Use custom secret if available, otherwise fetch from FreePBX
@@ -166,7 +193,7 @@ if (!empty($device['custom_sip_secret'])) {
         $deviceInfo = \FreePBX::Core()->getDevice($ext);
         $secret = $deviceInfo['secret'] ?? '';
     } catch (Exception $e) {
-        error_log("Quick Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
+        error_log("Quick-Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
     }
 }
 
@@ -210,5 +237,6 @@ $output = qp_render_mustache($template_source, $context);
 $safe_filename = str_replace('"', '\\"', $filename);
 header("Content-Type: $content_type");
 header("Content-Disposition: attachment; filename=\"$safe_filename\"");
+qp_log_access(200, $request_uri ?? "?mac=$mac", $mac, $ext, 'config');
 echo $output;
 ?>

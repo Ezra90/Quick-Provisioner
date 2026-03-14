@@ -1,5 +1,5 @@
 <?php
-// ajax.quickprovisioner.php - Quick Provisioner v3.0.0 - Backend API
+// ajax.quickprovisioner.php - Quick-Provisioner - Backend API
 
 // Configuration constants (only define if not already defined by Quickprovisioner.class.php)
 if (!defined('QP_FREEPBX_BASE_PATH')) {
@@ -66,7 +66,7 @@ function qp_safe_write($filepath, $content) {
         return ['status' => false, 'message' => 'Failed to write file: ' . basename($filepath)];
     }
     if (!chmod($filepath, 0664)) {
-        error_log("Quick Provisioner: Failed to set permissions on $filepath");
+        error_log("Quick-Provisioner: Failed to set permissions on $filepath");
     }
     return ['status' => true];
 }
@@ -100,7 +100,7 @@ function qp_safe_move_upload($tmp_file, $target) {
         return ['status' => false, 'message' => 'Failed to move uploaded file'];
     }
     if (!chmod($target, 0664)) {
-        error_log("Quick Provisioner: Failed to set permissions on $target");
+        error_log("Quick-Provisioner: Failed to set permissions on $target");
     }
     return ['status' => true];
 }
@@ -157,7 +157,7 @@ switch ($action) {
             \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device saved: MAC=" . $form['mac']);
             $response = ['status' => true];
         } catch (Exception $e) {
-            error_log("Quick Provisioner: Error saving device - " . $e->getMessage());
+            error_log("Quick-Provisioner: Error saving device - " . $e->getMessage());
             $response['message'] = 'Database error: Failed to save device';
         }
         break;
@@ -194,10 +194,10 @@ switch ($action) {
                         $secret = $device['secret'];
                         $secretSource = 'FreePBX';
                     } else {
-                        error_log("Quick Provisioner: Secret not found for extension $ext");
+                        error_log("Quick-Provisioner: Secret not found for extension $ext");
                     }
                 } catch (Exception $e) {
-                    error_log("Quick Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
+                    error_log("Quick-Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
                 }
             }
 
@@ -256,10 +256,10 @@ switch ($action) {
                 if ($deviceInfo && is_array($deviceInfo) && isset($deviceInfo['secret'])) {
                     $secret = $deviceInfo['secret'];
                 } else {
-                    error_log("Quick Provisioner: Secret not found for extension $ext during config preview");
+                    error_log("Quick-Provisioner: Secret not found for extension $ext during config preview");
                 }
             } catch (Exception $e) {
-                error_log("Quick Provisioner: Error fetching FreePBX data for extension $ext - " . $e->getMessage());
+                error_log("Quick-Provisioner: Error fetching FreePBX data for extension $ext - " . $e->getMessage());
             }
         }
 
@@ -270,7 +270,7 @@ switch ($action) {
                 $display_name = $userInfo['name'];
             }
         } catch (Exception $e) {
-            error_log("Quick Provisioner: Error fetching user info for extension $ext - " . $e->getMessage());
+            error_log("Quick-Provisioner: Error fetching user info for extension $ext - " . $e->getMessage());
         }
 
         $server_ip = $_SERVER['SERVER_ADDR'];
@@ -421,7 +421,7 @@ switch ($action) {
                 
                 if ($save_result) {
                     if (!chmod($target, 0664)) {
-                        error_log("Quick Provisioner: Failed to set permissions on $target");
+                        error_log("Quick-Provisioner: Failed to set permissions on $target");
                     }
                     \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Asset uploaded and resized: $filename");
                     $response = ['status' => true, 'url' => $filename];
@@ -698,11 +698,11 @@ switch ($action) {
                 $response = ['status' => true, 'secret' => $secret];
             } else {
                 $response['message'] = "Secret not found for extension $ext. Extension may not exist in FreePBX.";
-                error_log("Quick Provisioner: Secret not found for extension $ext");
+                error_log("Quick-Provisioner: Secret not found for extension $ext");
             }
         } catch (Exception $e) {
             $response['message'] = "Error fetching secret: " . $e->getMessage();
-            error_log("Quick Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
+            error_log("Quick-Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
         }
         break;
 
@@ -817,14 +817,14 @@ switch ($action) {
 
     case 'perform_update':
         $module_dir = __DIR__;
-        
+
         // Validate module_dir is within expected path for security
         $real_module_dir = realpath($module_dir);
         if ($real_module_dir === false || strpos($real_module_dir, QP_FREEPBX_BASE_PATH) !== 0) {
             $response['message'] = 'Invalid module directory';
             break;
         }
-        
+
         // Use git -C instead of cd for security
         $git_cmd = QP_GIT_COMMAND . ' -C ' . escapeshellarg($real_module_dir);
 
@@ -849,17 +849,59 @@ switch ($action) {
                 }
             }
 
-            // Note: Permission/ownership changes require elevated privileges.
-            // If needed, run 'fwconsole chown' manually or use the scripts/qp-update script with sudo.
+            // Fix permissions after update (like Pocket-Provisioner post-install)
+            $post_update_log = [];
 
-            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Module updated: $old_commit -> $new_commit");
+            // Run fwconsole chown to fix file ownership
+            $chown_output = [];
+            $chown_return = 0;
+            exec(QP_FWCONSOLE_CHOWN . ' 2>&1', $chown_output, $chown_return);
+            $post_update_log[] = 'fwconsole chown: ' . ($chown_return === 0 ? 'OK' : 'Failed');
+
+            // Fix permissions on asset directories
+            $asset_dirs = [
+                $real_module_dir . '/assets',
+                $real_module_dir . '/assets/uploads',
+                $real_module_dir . '/assets/ringtones',
+                $real_module_dir . '/assets/firmware',
+                $real_module_dir . '/assets/phonebook',
+                $real_module_dir . '/templates',
+            ];
+            $old_umask = umask(0);
+            foreach ($asset_dirs as $dir) {
+                if (is_dir($dir)) {
+                    @chmod($dir, 0775);
+                }
+            }
+            umask($old_umask);
+            $post_update_log[] = 'Directory permissions: Fixed';
+
+            // Run fwconsole reload to apply changes
+            $reload_output = [];
+            $reload_return = 0;
+            exec(QP_FWCONSOLE_RELOAD . ' 2>&1', $reload_output, $reload_return);
+            $post_update_log[] = 'fwconsole reload: ' . ($reload_return === 0 ? 'OK' : 'Failed');
+
+            // Re-run install to ensure DB schema is up to date
+            $install_path = $real_module_dir . '/install.php';
+            if (file_exists($install_path)) {
+                try {
+                    include($install_path);
+                    $post_update_log[] = 'Install script: OK';
+                } catch (Exception $e) {
+                    $post_update_log[] = 'Install script: ' . $e->getMessage();
+                }
+            }
+
+            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick-Provisioner updated: $old_commit -> $new_commit");
 
             $response = [
                 'status' => true,
                 'old_commit' => $old_commit,
                 'new_commit' => $new_commit,
                 'new_version' => $new_version,
-                'message' => 'Update completed successfully. Please refresh the page to see changes.'
+                'post_update' => $post_update_log,
+                'message' => 'Update completed successfully. Permissions fixed. Please refresh the page.'
             ];
         } else {
             $response['message'] = 'Git pull failed: ' . $pull_output;
@@ -874,7 +916,6 @@ switch ($action) {
             break;
         }
 
-        // Use explicit command mapping with constants for security
         $allowed_commands = [
             'reload' => QP_FWCONSOLE_RELOAD,
             'restart' => QP_FWCONSOLE_RESTART
@@ -898,6 +939,21 @@ switch ($action) {
                 'output' => implode("\n", $output)
             ];
         }
+        break;
+
+    // === ACCESS LOG ACTIONS ===
+    case 'list_access_log':
+        $limit = min(200, max(1, (int)($_REQUEST['limit'] ?? 50)));
+        $rows = $db->query(
+            "SELECT * FROM quickprovisioner_access_log ORDER BY id DESC LIMIT ?",
+            [$limit]
+        )->fetchAll(PDO::FETCH_ASSOC);
+        $response = ['status' => true, 'entries' => $rows ?: []];
+        break;
+
+    case 'clear_access_log':
+        $db->query("TRUNCATE TABLE quickprovisioner_access_log");
+        $response = ['status' => true, 'message' => 'Access log cleared'];
         break;
 }
 

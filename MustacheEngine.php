@@ -1,5 +1,5 @@
 <?php
-// MustacheEngine.php - Lightweight Mustache renderer & META parser for Quick Provisioner
+// MustacheEngine.php - Lightweight Mustache renderer & META parser for Quick-Provisioner
 // Compatible with Pocket-Provisioner Android app template format (.mustache files with META blocks)
 
 /**
@@ -232,7 +232,7 @@ function qp_resolve_template_file($model, $templates_dir) {
     // Also try with mixed extensions (e.g. model.cfg.mustache patterns from directory)
     $glob = glob($templates_dir . '/*.mustache');
     if ($glob === false) {
-        error_log("Quick Provisioner: Failed to scan templates directory: $templates_dir");
+        error_log("Quick-Provisioner: Failed to scan templates directory: $templates_dir");
         $glob = [];
     }
 
