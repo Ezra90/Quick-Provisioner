@@ -1,5 +1,5 @@
 #!/bin/bash
-# qp-update - Quick Provisioner Update Script
+# qp-update - Quick-Provisioner Update Script
 # Install to /usr/local/bin/qp-update with: sudo cp scripts/qp-update /usr/local/bin/ && sudo chmod +x /usr/local/bin/qp-update
 # Usage: sudo qp-update
 
@@ -11,7 +11,7 @@ WEB_USER="asterisk"
 WEB_GROUP="asterisk"
 
 echo "========================================"
-echo " Quick Provisioner - Update Script"
+echo " Quick-Provisioner - Update Script"
 echo "========================================"
 
 cd "$MODULE_DIR" || exit 1

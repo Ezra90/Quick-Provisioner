@@ -14,12 +14,9 @@ if (!qp_is_local_network()) {
 
 if (!defined('FREEPBX_IS_AUTH')) { die('No direct script access allowed'); }
 
-// Verify FreePBX Core is available
 if (!class_exists('FreePBX') || !\FreePBX::Core()) {
     die('FreePBX Core not available. Please ensure FreePBX is properly installed.');
 }
-
-$devices = \FreePBX::Database()->query("SELECT * FROM quickprovisioner_devices ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
 
 $extensions = [];
 try {
@@ -32,8 +29,7 @@ try {
         }
     }
 } catch (Exception $e) {
-    // Log error but don't stop execution
-    error_log("Quick Provisioner: Failed to fetch extensions - " . $e->getMessage());
+    error_log("Quick-Provisioner: Failed to fetch extensions - " . $e->getMessage());
 }
 
 if (session_status() === PHP_SESSION_NONE) {

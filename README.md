@@ -1,10 +1,10 @@
-# Quick Provisioner for FreePBX
+# Quick-Provisioner for FreePBX
 
 > ⚠️ **Early Access** — This module is under active development. Things will change frequently.
 
-**Quick Provisioner** turns your FreePBX server into a permanent **HTTP Provisioning Server (DMS)** for VoIP handsets. It serves device configurations, wallpapers, ringtones, firmware, and phonebooks — all managed through the FreePBX web interface.
+**Quick-Provisioner** turns your FreePBX server into a permanent **DMS / Endpoint Manager** for VoIP handsets. It serves device configurations, wallpapers, ringtones, firmware, and phonebooks — all managed through the FreePBX web interface.
 
-> 📱 **Companion App:** [Pocket Provisioner](https://github.com/Ezra90/Pocket-Provisioner) — Android field utility using the same Mustache template format.
+> 📱 **Companion App:** [Pocket Provisioner](https://github.com/Ezra90/Pocket-Provisioner) — Android standalone provisioning utility using the same Mustache template format.
 
 ---
 
@@ -31,13 +31,13 @@
 
 ```bash
 cd /var/www/html/admin/modules
-git clone https://github.com/Ezra90/freepbx-quickprovisioner.git quickprovisioner
+git clone https://github.com/Ezra90/Quick-Provisioner.git quickprovisioner
 chown -R asterisk:asterisk quickprovisioner
 fwconsole ma install quickprovisioner
 fwconsole reload
 ```
 
-Then navigate to **Admin → Quick Provisioner** in FreePBX.
+Then navigate to **Admin → Quick-Provisioner** in FreePBX.
 
 ## Updating
 
@@ -56,7 +56,7 @@ fwconsole reload
 
 ## Quick Start
 
-1. Open **Admin → Quick Provisioner**
+1. Open **Admin → Quick-Provisioner**
 2. Enter MAC address, select model, select extension
 3. Configure line keys using the visual button editor
 4. Click **Save**
