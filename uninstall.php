@@ -5,7 +5,7 @@ global $db;
 global $amp_conf;
 
 $logger = FreePBX::create()->Logger;
-$logger->log('Starting HH Quick Provisioner uninstall', 'INFO');
+$logger->log('Starting Quick Provisioner uninstall', 'INFO');
 
 // --- 1. Drop Database Table ---
 try {
@@ -15,59 +15,56 @@ try {
     $logger->log('Error dropping quickprovisioner_devices table: ' . $e->getMessage(), 'ERROR');
 }
 
-// --- 2. Remove uploads directory and contents ---
-$uploads_dir = __DIR__ . '/assets/uploads';
-if (is_dir($uploads_dir)) {
-    try {
-        // Remove all files in uploads directory
-        $files = glob($uploads_dir . '/*');
-        if ($files) {
-            foreach ($files as $file) {
-                if (is_file($file)) {
-                    unlink($file);
-                    $logger->log('Removed file: ' . basename($file), 'INFO');
+// --- 2. Remove asset directories and contents ---
+$asset_dirs = [
+    __DIR__ . '/assets/uploads',
+    __DIR__ . '/assets/ringtones',
+    __DIR__ . '/assets/firmware',
+    __DIR__ . '/assets/phonebook',
+];
+
+foreach ($asset_dirs as $dir) {
+    if (is_dir($dir)) {
+        try {
+            $files = glob($dir . '/*');
+            if ($files) {
+                foreach ($files as $file) {
+                    if (is_file($file)) {
+                        unlink($file);
+                    }
                 }
             }
+            $htaccess = $dir . '/.htaccess';
+            if (file_exists($htaccess)) {
+                unlink($htaccess);
+            }
+            rmdir($dir);
+            $logger->log('Removed directory: ' . basename($dir), 'INFO');
+        } catch(Exception $e) {
+            $logger->log('Error removing ' . basename($dir) . ': ' . $e->getMessage(), 'ERROR');
         }
-        
-        // Remove .htaccess if exists
-        $htaccess = $uploads_dir . '/.htaccess';
-        if (file_exists($htaccess)) {
-            unlink($htaccess);
-            $logger->log('Removed uploads/.htaccess', 'INFO');
-        }
-        
-        // Remove the uploads directory itself
-        rmdir($uploads_dir);
-        $logger->log('Removed uploads directory', 'INFO');
-    } catch(Exception $e) {
-        $logger->log('Error removing uploads directory: ' . $e->getMessage(), 'ERROR');
     }
 }
 
-// --- 3. Remove template files ---
+// --- 3. Remove template files (.mustache and .json) ---
 $templates_dir = __DIR__ . '/templates';
 if (is_dir($templates_dir)) {
     try {
-        // Remove all JSON template files
-        $templates = glob($templates_dir . '/*.json');
-        if ($templates) {
-            foreach ($templates as $template) {
-                if (is_file($template)) {
-                    unlink($template);
-                    $logger->log('Removed template: ' . basename($template), 'INFO');
+        foreach (['*.mustache', '*.json'] as $pattern) {
+            $templates = glob($templates_dir . '/' . $pattern);
+            if ($templates) {
+                foreach ($templates as $template) {
+                    if (is_file($template)) {
+                        unlink($template);
+                        $logger->log('Removed template: ' . basename($template), 'INFO');
+                    }
                 }
             }
         }
-        
-        // Remove .htaccess if exists
         $htaccess = $templates_dir . '/.htaccess';
         if (file_exists($htaccess)) {
             unlink($htaccess);
-            $logger->log('Removed templates/.htaccess', 'INFO');
         }
-        
-        // Remove the templates directory itself
         rmdir($templates_dir);
         $logger->log('Removed templates directory', 'INFO');
     } catch(Exception $e) {
@@ -79,32 +76,23 @@ if (is_dir($templates_dir)) {
 $assets_dir = __DIR__ . '/assets';
 if (is_dir($assets_dir)) {
     try {
-        // Remove any remaining files in assets (like downloaded background images)
         $files = glob($assets_dir . '/*');
         if ($files) {
             foreach ($files as $file) {
                 if (is_file($file)) {
                     unlink($file);
-                    $logger->log('Removed asset file: ' . basename($file), 'INFO');
                 }
             }
         }
-        
-        // Try to remove the assets directory if it's now empty
         $remaining = glob($assets_dir . '/*');
         if (empty($remaining)) {
             rmdir($assets_dir);
             $logger->log('Removed assets directory', 'INFO');
-        } else {
-            $logger->log('Assets directory not empty, keeping it', 'WARNING');
         }
     } catch(Exception $e) {
         $logger->log('Error removing assets directory: ' . $e->getMessage(), 'ERROR');
     }
 }
 
-// --- 5. Final ownership and permission cleanup ---
-// Note: Direct PHP file operations now handle permissions correctly
-// No sudo needed as the web server user already has proper group permissions
-$logger->log('HH Quick Provisioner uninstall completed', 'INFO');
+$logger->log('Quick Provisioner uninstall completed', 'INFO');
 ?>

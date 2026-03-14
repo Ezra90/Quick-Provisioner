@@ -1,6 +1,6 @@
 <?php
 /**
- * HH Quick Provisioner - Installation Script
+ * Quick Provisioner - Installation Script v3.0.0
  *
  * This file contains FreePBX module lifecycle hooks for installation.
  * Refactored for procedural execution as required by FreePBX.
@@ -28,6 +28,7 @@ try {
         `custom_template_override` TEXT DEFAULT NULL COMMENT 'Custom template override',
         `prov_username` VARCHAR(50) DEFAULT NULL COMMENT 'Provisioning auth username',
         `prov_password` VARCHAR(100) DEFAULT NULL COMMENT 'Provisioning auth password',
+        `custom_sip_secret` VARCHAR(100) DEFAULT NULL COMMENT 'Custom SIP secret (overrides FreePBX)',
         `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (`id`),
@@ -37,7 +38,7 @@ try {
 
     $db->query($sql);
 
-    // Add provisioning auth columns if missing (Upgrade logic included here)
+    // Add columns if missing (upgrade compatibility)
     try {
         $db->query("ALTER TABLE quickprovisioner_devices ADD COLUMN IF NOT EXISTS prov_username VARCHAR(50) DEFAULT NULL");
         $db->query("ALTER TABLE quickprovisioner_devices ADD COLUMN IF NOT EXISTS prov_password VARCHAR(100) DEFAULT NULL");
@@ -62,6 +63,9 @@ $module_path = __DIR__;
 $directories = [
     $module_path . '/assets',
     $module_path . '/assets/uploads',
+    $module_path . '/assets/ringtones',
+    $module_path . '/assets/firmware',
+    $module_path . '/assets/phonebook',
     $module_path . '/templates',
 ];
 
@@ -93,60 +97,29 @@ foreach ($directories as $dir) {
 
 umask($old_umask);
 
-// Create .htaccess for uploads directory to prevent direct execution
-$uploads_dir = $module_path . '/assets/uploads';
-if (is_dir($uploads_dir)) {
-    $htaccess_path = $uploads_dir . '/.htaccess';
-    if (!file_exists($htaccess_path)) {
-        $htaccess_content = "# Quick Provisioner - Protect uploads directory\n";
-        $htaccess_content .= "php_flag engine off\n";
-        $htaccess_content .= "Options -ExecCGI -Indexes\n";
-        $htaccess_content .= "AddType text/plain .php .php3 .phtml .pht\n";
-        if (file_put_contents($htaccess_path, $htaccess_content) === false) {
-            error_log("Quick Provisioner: Failed to create .htaccess in $uploads_dir");
-            if (class_exists('FreePBX')) {
-                FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Quick Provisioner: Failed to create .htaccess in $uploads_dir");
-            }
-        } else {
-            if (!chmod($htaccess_path, 0664)) {
-                error_log("Quick Provisioner: Failed to set permissions on $htaccess_path");
-                if (class_exists('FreePBX')) {
-                    FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Quick Provisioner: Failed to set permissions on $htaccess_path");
-                }
-            }
-        }
-    }
-}
+// --- 3. Create .htaccess files to prevent direct execution ---
+$protected_dirs = [
+    $module_path . '/assets/uploads'   => "# Quick Provisioner - Protect uploads directory\nphp_flag engine off\nOptions -ExecCGI -Indexes\nAddType text/plain .php .php3 .phtml .pht\n",
+    $module_path . '/assets/ringtones' => "# Quick Provisioner - Protect ringtones directory\nphp_flag engine off\nOptions -ExecCGI -Indexes\n",
+    $module_path . '/assets/firmware'  => "# Quick Provisioner - Protect firmware directory\nphp_flag engine off\nOptions -ExecCGI -Indexes\n",
+    $module_path . '/assets/phonebook' => "# Quick Provisioner - Protect phonebook directory\nphp_flag engine off\nOptions -ExecCGI -Indexes\n",
+    $module_path . '/templates'        => "# Quick Provisioner - Protect templates directory\nphp_flag engine off\nOptions -ExecCGI -Indexes\nAddType text/plain .php .php3 .phtml .pht .mustache\n",
+];
 
-// Create .htaccess for templates directory to prevent direct execution
-$templates_dir = $module_path . '/templates';
-if (is_dir($templates_dir)) {
-    $htaccess_path = $templates_dir . '/.htaccess';
-    if (!file_exists($htaccess_path)) {
-        $htaccess_content = "# Quick Provisioner - Protect templates directory\n";
-        $htaccess_content .= "php_flag engine off\n";
-        $htaccess_content .= "Options -ExecCGI -Indexes\n";
-        $htaccess_content .= "AddType text/plain .php .php3 .phtml .pht .json\n";
-        if (file_put_contents($htaccess_path, $htaccess_content) === false) {
-            error_log("Quick Provisioner: Failed to create .htaccess in $templates_dir");
-            if (class_exists('FreePBX')) {
-                FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Quick Provisioner: Failed to create .htaccess in $templates_dir");
-            }
-        } else {
-            if (!chmod($htaccess_path, 0664)) {
-                error_log("Quick Provisioner: Failed to set permissions on $htaccess_path");
-                if (class_exists('FreePBX')) {
-                    FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Quick Provisioner: Failed to set permissions on $htaccess_path");
-                }
-            }
-            if (class_exists('FreePBX')) {
-                FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick Provisioner: Created .htaccess for templates directory");
+foreach ($protected_dirs as $dir => $htaccess_content) {
+    if (is_dir($dir)) {
+        $htaccess_path = $dir . '/.htaccess';
+        if (!file_exists($htaccess_path)) {
+            if (file_put_contents($htaccess_path, $htaccess_content) === false) {
+                error_log("Quick Provisioner: Failed to create .htaccess in $dir");
+            } else {
+                chmod($htaccess_path, 0664);
             }
         }
     }
 }
 
 if (class_exists('FreePBX')) {
-    FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick Provisioner: Module installation/check completed");
+    FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick Provisioner: Module installation/check completed (v3.0.0)");
 }
 ?>

@@ -1,6 +1,7 @@
 <?php
-// provision.php - HH Quick Provisioner v2.2 - Dynamic Engine
+// provision.php - Quick Provisioner v3.0.0 - Mustache Provisioning Engine
 include '/etc/freepbx.conf';
+require_once __DIR__ . '/MustacheEngine.php';
 
 function qp_is_local_network() {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -11,6 +12,65 @@ function qp_is_local_network() {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Asset file serving (ringtones, firmware, phonebook)
+// These endpoints are checked before MAC-based provisioning so that static
+// assets can be served efficiently with the same auth rules.
+// ---------------------------------------------------------------------------
+$request_uri = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+
+$asset_routes = [
+    '/ringtones/' => ['dir' => __DIR__ . '/assets/ringtones', 'type' => 'audio/wav'],
+    '/firmware/'  => ['dir' => __DIR__ . '/assets/firmware',  'type' => 'application/octet-stream'],
+    '/phonebook/' => ['dir' => __DIR__ . '/assets/phonebook', 'type' => 'application/xml'],
+];
+
+foreach ($asset_routes as $prefix => $route) {
+    if ($request_uri && strpos($request_uri, $prefix) !== false) {
+        // Extract filename from the URL path after the prefix
+        $pos = strpos($request_uri, $prefix);
+        $raw_filename = substr($request_uri, $pos + strlen($prefix));
+        $filename = basename($raw_filename); // prevent directory traversal
+
+        if ($filename === '' || $filename === '.' || $filename === '..') {
+            http_response_code(400);
+            die('Invalid filename');
+        }
+
+        // Auth check: require local network or valid Basic Auth credentials
+        if (!qp_is_local_network()) {
+            $auth_user = $_SERVER['PHP_AUTH_USER'] ?? '';
+            $auth_pass = $_SERVER['PHP_AUTH_PW'] ?? '';
+            if ($auth_user === '' || $auth_pass === '') {
+                header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+                header('HTTP/1.0 401 Unauthorized');
+                die('Authentication required');
+            }
+        }
+
+        $file_path = $route['dir'] . '/' . $filename;
+        $real_path = realpath($file_path);
+        $real_dir  = realpath($route['dir']);
+
+        // Verify the resolved path is within the expected asset directory
+        if ($real_path === false || $real_dir === false
+            || strpos($real_path, $real_dir . '/') !== 0
+            || !is_file($real_path)) {
+            http_response_code(404);
+            die('File not found');
+        }
+
+        $safe_filename = str_replace('"', '\\"', $filename);
+        header('Content-Type: ' . $route['type']);
+        header('Content-Disposition: attachment; filename="' . $safe_filename . '"');
+        readfile($file_path);
+        exit;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MAC-based device provisioning
+// ---------------------------------------------------------------------------
 $mac = isset($_GET['mac']) ? strtoupper(preg_replace('/[^A-F0-9]/', '', $_GET['mac'])) : null;
 if (!$mac || strlen($mac) !== 12 || !ctype_xdigit($mac)) {
     \FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Invalid MAC attempt: " . ($mac ?? 'none'));
@@ -55,31 +115,42 @@ if (!qp_is_local_network()) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Resolve Mustache template for the device model
+// ---------------------------------------------------------------------------
 $model = basename($device['model']); // Sanitize to prevent path traversal
-$profile_path = __DIR__ . '/templates/' . $model . '.json';
-if (!file_exists($profile_path)) {
+$template_path = qp_resolve_template_file($model, __DIR__ . '/templates');
+
+if ($template_path === null) {
+    http_response_code(404);
     die("Template not found for model $model");
 }
 
-$profile_json = file_get_contents($profile_path);
-$profile = json_decode($profile_json, true);
-
-if ($profile === null) {
-    die("Invalid template JSON for model $model");
+$source = file_get_contents($template_path);
+if ($source === false) {
+    http_response_code(500);
+    die("Failed to read template for model $model");
 }
 
-$content_type = $profile['provisioning']['content_type'] ?? 'text/plain';
-$filename_pattern = $profile['provisioning']['filename_pattern'] ?? '{mac}.cfg';
-$filename = str_replace('{mac}', $mac, $filename_pattern);
-header("Content-Type: $content_type");
-header("Content-Disposition: attachment; filename=\"$filename\"");
+// Parse META block for content_type, filename_pattern, and context defaults
+$meta = qp_parse_template_meta($source);
+if ($meta === null) {
+    http_response_code(500);
+    die("Invalid or missing META block in template for model $model");
+}
 
-$custom_options = json_decode($device['custom_options_json'], true) ?? [];
+$content_type = $meta['content_type'] ?? 'text/plain';
+$filename_pattern = $meta['filename_pattern'] ?? '{mac}.cfg';
+$filename = str_replace('{mac}', $mac, $filename_pattern);
+
+// ---------------------------------------------------------------------------
+// Gather server-side data for the provisioning context
+// ---------------------------------------------------------------------------
 $ext = $device['extension'];
 $display_name = $ext;
 $secret = '';
 
-// Fetch display name
+// Fetch display name from FreePBX
 try {
     $userInfo = \FreePBX::Core()->getUser($ext);
     $display_name = $userInfo['name'] ?? $ext;
@@ -100,140 +171,44 @@ if (!empty($device['custom_sip_secret'])) {
 }
 
 $server_ip = $_SERVER['SERVER_ADDR'];
-$server_port = \FreePBX::Sipsettings()->get('bindport') ?? '5060';
+$sip_port = \FreePBX::Sipsettings()->get('bindport') ?? '5060';
 
-$wpUrl = "";
+// Build wallpaper URL if the device has a wallpaper configured
+$wallpaper_url = '';
 if (!empty($device['wallpaper'])) {
-    $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
+    $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'];
-    // Do not embed credentials in URL - device will authenticate via Basic Auth headers
-    $wpUrl = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=$mac";
+    $wallpaper_url = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=$mac";
 }
 
-$lockEnable = !empty($device['security_pin']) ? 1 : 0;
+// Build the provisioning base URL from the current request
+$prov_protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
+$prov_host = $_SERVER['HTTP_HOST'];
+$provisioning_url = "$prov_protocol://$prov_host/admin/modules/quickprovisioner/provision.php?mac=$mac";
 
-$vars = [
-    '{{mac}}' => $mac,
-    '{{extension}}' => $ext,
-    '{{password}}' => $secret,
-    '{{display_name}}' => $display_name,
-    '{{server_host}}' => $server_ip,
-    '{{server_port}}' => $server_port,
-    '{{wallpaper}}' => $wpUrl,
-    '{{security_pin}}' => $device['security_pin'] ?? '',
-    '{{lock_enable}}' => $lockEnable
+$server_info = [
+    'server_ip'        => $server_ip,
+    'server_port'      => $sip_port,
+    'sip_port'         => $sip_port,
+    'display_name'     => $display_name,
+    'secret'           => $secret,
+    'wallpaper_url'    => $wallpaper_url,
+    'provisioning_url' => $provisioning_url,
 ];
 
-foreach ($custom_options as $key => $value) {
-    if ($value !== '') {
-        $vars['{{' . $key . '}}'] = $value;
-    }
-}
+// ---------------------------------------------------------------------------
+// Build context and render the Mustache template
+// ---------------------------------------------------------------------------
+$context = qp_build_provisioning_context($device, $meta, $server_info);
 
-$template = $device['custom_template_override'] ? $device['custom_template_override'] : $profile['provisioning']['template'] ?? '';
+// Strip the META comment block so it doesn't appear in the output
+$template_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*?\}\s*\}\}\s*/', '', $source);
 
-$template = preg_replace_callback('/{{if (.*?)}}(.*?){{\/if}}/s', function($m) use ($vars) {
-    $var = trim($m[1]);
-    $content = $m[2];
-    if (isset($vars['{{' . $var . '}}']) && $vars['{{' . $var . '}}']) {
-        return $content;
-    }
-    return '';
-}, $template);
+$output = qp_render_mustache($template_source, $context);
 
-if (preg_match('/{{line_keys_loop}}(.*?){{\/line_keys_loop}}/s', $template, $matches)) {
-    $loopContent = $matches[1];
-    $keys = json_decode($device['keys_json'], true) ?? [];
-    $builtLoop = '';
-    usort($keys, function($a, $b) { return $a['index'] - $b['index']; });
-    foreach ($keys as $k) {
-        $item = $loopContent;
-        $rawType = $k['type'] ?? 'line';
-        $mappedType = $profile['provisioning']['type_mapping'][$rawType] ?? $rawType;
-        $item = str_replace('{{index}}', $k['index'], $item);
-        $item = str_replace('{{type}}', $mappedType, $item);
-        foreach ($k as $keyName => $keyValue) {
-            if ($keyName == 'index' || $keyName == 'type') continue;
-            $item = str_replace('{{' . $keyName . '}}', htmlspecialchars($keyValue), $item);
-        }
-        $item = preg_replace('/{{[a-z_]+}}/', '', $item);
-        $builtLoop .= $item;
-    }
-    $template = str_replace($matches[0], $builtLoop, $template);
-}
-
-if (preg_match('/{{contacts_loop}}(.*?){{\/contacts_loop}}/s', $template, $matches)) {
-    $loopContent = $matches[1];
-    $contacts = json_decode($device['contacts_json'], true) ?? [];
-    $builtLoop = '';
-    foreach ($contacts as $idx => $c) {
-        $item = $loopContent;
-        $item = str_replace('{{index}}', $idx + 1, $item);
-        $item = str_replace('{{name}}', htmlspecialchars($c['name']), $item);
-        $item = str_replace('{{number}}', htmlspecialchars($c['number']), $item);
-        $item = str_replace('{{custom_label}}', htmlspecialchars($c['custom_label']), $item);
-        $photo_url = "";
-        if (!empty($c['photo'])) {
-            $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
-            $host = $_SERVER['HTTP_HOST'];
-            // Do not embed credentials in URL - device will authenticate via Basic Auth headers
-            $photo_url = "$protocol://$host/admin/modules/quickprovisioner/media.php?file=" . $c['photo'] . "&mac=$mac&w=100&h=100&mode=crop";
-        }
-        $item = str_replace('{{photo_url}}', $photo_url, $item);
-        $builtLoop .= $item;
-    }
-    $template = str_replace($matches[0], $builtLoop, $template);
-}
-
-// Generic array repeater handler for digitmap and other custom repeaters
-if (preg_match_all('/{{([a-z_]+)_loop}}(.*?){{\/\1_loop}}/s', $template, $allMatches, PREG_SET_ORDER)) {
-    foreach ($allMatches as $match) {
-        $loopName = $match[1];
-        // Skip already processed loops
-        if ($loopName === 'line_keys' || $loopName === 'contacts') {
-            continue;
-        }
-        
-        $loopContent = $match[2];
-        $loopData = [];
-        
-        // Check if template defines the array data source
-        if (isset($profile['provisioning'][$loopName . '_data'])) {
-            $loopData = $profile['provisioning'][$loopName . '_data'];
-        }
-        // Or check if device has custom data for this loop
-        else if (!empty($device['custom_options_json'])) {
-            $customOptions = json_decode($device['custom_options_json'], true) ?? [];
-            if (isset($customOptions[$loopName . '_data'])) {
-                $loopData = json_decode($customOptions[$loopName . '_data'], true) ?? [];
-            }
-        }
-        
-        $builtLoop = '';
-        foreach ($loopData as $idx => $item_data) {
-            $item = $loopContent;
-            // Replace {{index}} with 1-based index
-            $item = str_replace('{{index}}', $idx + 1, $item);
-            // Replace any other variables from the data item
-            if (is_array($item_data)) {
-                foreach ($item_data as $key => $value) {
-                    $item = str_replace('{{' . $key . '}}', htmlspecialchars($value), $item);
-                }
-            } else {
-                // If item is a scalar, replace {{value}}
-                $item = str_replace('{{value}}', htmlspecialchars($item_data), $item);
-            }
-            // Clean up any remaining unreplaced variables
-            $item = preg_replace('/{{[a-z_]+}}/', '', $item);
-            $builtLoop .= $item;
-        }
-        $template = str_replace($match[0], $builtLoop, $template);
-    }
-}
-
-foreach ($vars as $k => $v) {
-    $template = str_replace($k, $v, $template);
-}
-
-echo $template;
+// Send response headers and body
+$safe_filename = str_replace('"', '\\"', $filename);
+header("Content-Type: $content_type");
+header("Content-Disposition: attachment; filename=\"$safe_filename\"");
+echo $output;
 ?>

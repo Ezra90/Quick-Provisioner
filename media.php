@@ -1,5 +1,5 @@
 <?php
-// media.php - HH Quick Provisioner v2.2 - Secure Resizer
+// media.php - Quick Provisioner v3.0.0 - Secure Resizer
 include '/etc/freepbx.conf';
 
 function qp_is_local_network() {
@@ -60,16 +60,24 @@ if (!file_exists($path) || empty($file)) {
 
 if ($mac && ($req_w == 0 || $req_h == 0)) {
     global $db;
+    require_once __DIR__ . '/MustacheEngine.php';
     $device = $db->getRow("SELECT model FROM quickprovisioner_devices WHERE mac=?", [$mac]);
     if ($device) {
-        $model = basename($device['model']); // Sanitize to prevent path traversal
-        $profile_path = __DIR__ . '/templates/' . $model . '.json';
-        if (file_exists($profile_path)) {
-            $profile = json_decode(file_get_contents($profile_path), true);
-            $sch = $profile['visual_editor']['schematic'] ?? null;
-            if ($sch) {
-                if ($req_w == 0) $req_w = $sch['screen_width'] ?? 800;
-                if ($req_h == 0) $req_h = $sch['screen_height'] ?? 480;
+        $model = basename($device['model']);
+        $template_file = qp_resolve_template_file($model, __DIR__ . '/templates');
+        if ($template_file) {
+            $source = file_get_contents($template_file);
+            $meta = qp_parse_template_meta($source);
+            if ($meta && !empty($meta['wallpaper_specs'])) {
+                // Try exact model match first, then first available spec
+                $spec = $meta['wallpaper_specs'][$model] ?? null;
+                if (!$spec) {
+                    $spec = reset($meta['wallpaper_specs']);
+                }
+                if ($spec) {
+                    if ($req_w == 0) $req_w = $spec['width'] ?? 800;
+                    if ($req_h == 0) $req_h = $spec['height'] ?? 480;
+                }
             }
         }
     }

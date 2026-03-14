@@ -45,7 +45,7 @@ if (!isset($_SESSION['qp_csrf'])) {
 $csrf_token = $_SESSION['qp_csrf'];
 ?>
 <div class="container-fluid">
-    <h1>HH Quick Provisioner v2.2.0</h1>
+    <h1>Quick Provisioner v3.0.0</h1>
 
     <ul class="nav nav-tabs" role="tablist">
         <li class="active"><a data-toggle="tab" href="#tab-list" onclick="loadDevices()">Device List</a></li>
@@ -477,29 +477,47 @@ $csrf_token = $_SESSION['qp_csrf'];
             <br><button class="btn btn-primary" onclick="uploadAsset()">Upload</button>
             <hr>
             <div id="assetGrid" class="row"></div>
+            <hr>
+            <h3>Ringtones</h3>
+            <input type="file" id="ringtoneUpload" class="form-control" accept=".wav">
+            <br><button class="btn btn-primary" onclick="uploadRingtone()">Upload Ringtone</button>
+            <div id="ringtoneList" class="row" style="margin-top:10px;"></div>
+            <hr>
+            <h3>Firmware</h3>
+            <input type="file" id="firmwareUpload" class="form-control">
+            <br><button class="btn btn-primary" onclick="uploadFirmware()">Upload Firmware</button>
+            <div id="firmwareList" class="row" style="margin-top:10px;"></div>
         </div>
 
         <div id="tab-templates" class="tab-pane fade">
-            <h3>Import Template JSON</h3>
-            <p>Paste a complete template JSON below. Must include "model", "display_name", "provisioning.template", etc.</p>
-            <textarea id="driverInput" class="form-control" rows="15" placeholder='Example structure:
-{
+            <h3>Import Mustache Template</h3>
+            <p>Paste a Mustache template below. The template must include a <code>{{! META: { ... } }}</code> comment block at the top with model metadata and variable definitions.</p>
+            <textarea id="driverInput" class="form-control" rows="15" placeholder='{{! META: {
   "manufacturer": "Yealink",
-  "model": "T48G",
-  "display_name": "Yealink T48G",
-  "configurable_options": [ ... ],
-  "visual_editor": { ... },
-  "provisioning": {
-    "template": "#!version:1.0.0.1\n..."
-  }
-}'></textarea>
+  "model_family": "T4x",
+  "display_name": "Yealink T4x Custom",
+  "config_format": "cfg",
+  "content_type": "text/plain",
+  "filename_pattern": "{mac}.cfg",
+  "supported_models": ["T48G"],
+  "max_line_keys": 29,
+  "categories": [ ... ],
+  "variables": [ ... ]
+} }}
+#!version:1.0.0.1
+{{#lines}}
+account.{{line_index}}.enable = 1
+{{/lines}}'></textarea>
             <br>
             <button class="btn btn-primary" onclick="importDriver()">Import Template</button>
-            <button class="btn btn-info" onclick="showExampleJSON()">Show Example JSON</button>
+            <button class="btn btn-info" onclick="showExampleTemplate()">Show Example Template</button>
+            <hr>
+            <input type="file" id="templateFileUpload" accept=".mustache,.cfg,.xml">
+            <button class="btn btn-default" onclick="uploadTemplateFile()">Upload Template File</button>
             <hr>
             <div id="importFeedback"></div>
             <table class="table">
-                <thead><tr><th>Model</th><th>Display Name</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Model</th><th>Manufacturer</th><th>Display Name</th><th>Supported Models</th><th>Actions</th></tr></thead>
                 <tbody id="templatesList"></tbody>
             </table>
         </div>
@@ -634,6 +652,7 @@ var currentKeys = [];
 var currentContacts = [];
 var currentDeviceId = null;
 var profiles = {};
+var templateSources = {};
 var smartDialShortcuts = {}; // Stores digit => extension mappings
 var isExpandedView = false; // Tracks expanded/collapsed state for expandable layouts
 
@@ -783,10 +802,11 @@ function loadTemplates() {
             $('#templatesList').html('');
             $('#model').html('');
             r.list.forEach(function(t) {
-                // Escape values to prevent XSS
                 var escapedModel = $('<div>').text(t.model).html();
                 var escapedDisplayName = $('<div>').text(t.display_name).html();
-                var row = '<tr><td>' + escapedModel + '</td><td>' + escapedDisplayName + '</td><td><button onclick="downloadTemplate(\'' + escapedModel.replace(/'/g, "\\'") + '\')">Download</button> <button onclick="deleteTemplate(\'' + escapedModel.replace(/'/g, "\\'") + '\')">Delete</button></td></tr>';
+                var escapedManufacturer = $('<div>').text(t.manufacturer || '').html();
+                var escapedModels = $('<div>').text((t.supported_models || []).join(', ')).html();
+                var row = '<tr><td>' + escapedModel + '</td><td>' + escapedManufacturer + '</td><td>' + escapedDisplayName + '</td><td>' + escapedModels + '</td><td><button onclick="downloadTemplate(\'' + escapedModel.replace(/'/g, "\\'") + '\')">Download</button> <button onclick="deleteTemplate(\'' + escapedModel.replace(/'/g, "\\'") + '\')">Delete</button></td></tr>';
                 $('#templatesList').append(row);
                 $('#model').append('<option value="' + escapedModel + '">' + escapedDisplayName + '</option>');
             });
@@ -806,8 +826,9 @@ function loadProfile() {
         console.log('Template response:', r);
         if (r.status) {
             try {
-                profiles[model] = JSON.parse(r.json);
-                console.log('Template parsed successfully:', profiles[model]);
+                profiles[model] = r.meta;
+                templateSources[model] = r.source || '';
+                console.log('Template loaded successfully:', profiles[model]);
                 showModelNotes();
                 loadDeviceOptions();
                 updatePageSelect();
@@ -819,8 +840,8 @@ function loadProfile() {
                 updateHandsetSettingsPreview();
                 loadAssetGallery();
             } catch (e) {
-                console.error('JSON parse error:', e);
-                alert('Error parsing template JSON: ' + e.message);
+                console.error('Template load error:', e);
+                alert('Error loading template: ' + e.message);
             }
         } else {
             console.error('Template load failed:', r.message);
@@ -847,79 +868,70 @@ function loadDeviceOptions() {
     var model = $('#model').val();
     var profile = profiles[model];
     var html = '';
-    if (profile && profile.configurable_options) {
-        // Group options by category
-        var categories = {};
-        var categoryLabels = {
-            'security': 'Security Settings',
-            'display': 'Display Settings',
-            'provisioning': 'Provisioning Settings',
-            'dialing': 'Dialing Settings',
-            'features': 'Feature Settings'
-        };
+    if (profile && profile.variables && profile.variables.length > 0) {
+        // Build category lookup from META categories
+        var categoryDefs = {};
+        var categoryOrder = [];
+        if (profile.categories && profile.categories.length > 0) {
+            profile.categories.sort(function(a, b) { return (a.order || 0) - (b.order || 0); });
+            profile.categories.forEach(function(cat) {
+                categoryDefs[cat.id] = cat;
+                categoryOrder.push(cat.id);
+            });
+        }
         
-        // Group options by category
-        profile.configurable_options.forEach(function(opt) {
-            var cat = opt.category || 'other';
+        // Group variables by category
+        var categories = {};
+        profile.variables.forEach(function(v) {
+            var cat = v.category || 'other';
             if (!categories[cat]) {
                 categories[cat] = [];
             }
-            categories[cat].push(opt);
+            categories[cat].push(v);
+        });
+        
+        // Add 'other' to order if it has variables and isn't already listed
+        if (categories['other'] && categoryOrder.indexOf('other') === -1) {
+            categoryOrder.push('other');
+        }
+        // Add any categories that have variables but aren't in the order
+        Object.keys(categories).forEach(function(cat) {
+            if (categoryOrder.indexOf(cat) === -1) {
+                categoryOrder.push(cat);
+            }
         });
         
         // Render each category as a collapsible panel
-        var categoryOrder = ['security', 'display', 'provisioning', 'dialing', 'features', 'other'];
         categoryOrder.forEach(function(cat) {
             if (!categories[cat]) return;
             
-            var catLabel = categoryLabels[cat] || 'Other Settings';
+            var catDef = categoryDefs[cat];
+            var catLabel = catDef ? catDef.label : (cat.charAt(0).toUpperCase() + cat.slice(1) + ' Settings');
+            var catIcon = catDef && catDef.icon ? catDef.icon + ' ' : '';
             var catId = 'category_' + cat;
             
             html += '<div class="panel panel-default">';
             html += '<div class="panel-heading" style="cursor: pointer;" onclick="$(\'#' + catId + '\').collapse(\'toggle\')">';
             html += '<h4 class="panel-title">';
-            html += '<i class="fa fa-chevron-down"></i> ' + catLabel;
+            html += catIcon + '<i class="fa fa-chevron-down"></i> ' + $('<div>').text(catLabel).html();
             html += '</h4>';
             html += '</div>';
             html += '<div id="' + catId + '" class="panel-collapse collapse in">';
             html += '<div class="panel-body">';
             
-            categories[cat].forEach(function(opt) {
+            categories[cat].forEach(function(v) {
+                var escapedName = $('<div>').text(v.name).html();
+                var escapedDesc = $('<div>').text(v.description || '').html();
+                var escapedExample = $('<div>').text(v.example || '').html();
+                var escapedDefault = $('<div>').text(v.default || '').html();
+                
                 html += '<div class="form-group">';
-                // Label with required indicator
-                html += '<label title="' + (opt.description || '') + '">';
-                html += opt.label;
-                if (opt.required) {
-                    html += ' <span class="text-danger">*</span>';
-                }
-                html += '</label>';
-                
-                // Field based on type
-                if (opt.type === 'bool') {
-                    html += '<select name="custom_options[' + opt.name + ']" class="form-control"' + (opt.required ? ' required' : '') + '>';
-                    html += '<option value="">Default (' + opt.default + ')</option>';
-                    html += '<option value="1">On</option>';
-                    html += '<option value="0">Off</option>';
-                    html += '</select>';
-                } else if (opt.type === 'select') {
-                    html += '<select name="custom_options[' + opt.name + ']" class="form-control"' + (opt.required ? ' required' : '') + '>';
-                    html += '<option value="">Default (' + opt.default + ')</option>';
-                    for (var val in opt.options) {
-                        html += '<option value="' + val + '">' + opt.options[val] + '</option>';
-                    }
-                    html += '</select>';
-                } else if (opt.type === 'number') {
-                    html += '<input type="number" name="custom_options[' + opt.name + ']" class="form-control" ';
-                    html += 'min="' + (opt.min || '') + '" max="' + (opt.max || '') + '" ';
-                    html += 'placeholder="Default: ' + opt.default + '"' + (opt.required ? ' required' : '') + '>';
-                } else {
-                    html += '<input type="text" name="custom_options[' + opt.name + ']" class="form-control" ';
-                    html += 'placeholder="Default: ' + opt.default + '"' + (opt.required ? ' required' : '') + '>';
-                }
-                
-                // Description help text
-                if (opt.description) {
-                    html += '<small class="help-block text-muted">' + opt.description + '</small>';
+                html += '<label title="' + escapedDesc + '">' + escapedName + '</label>';
+                html += '<input type="text" name="custom_options[' + escapedName + ']" class="form-control" ';
+                html += 'placeholder="' + (escapedExample ? escapedExample : 'Default: ' + escapedDefault) + '" ';
+                html += 'value="' + escapedDefault + '">';
+                if (v.description) {
+                    html += '<small class="help-block text-muted">' + escapedDesc + '</small>';
                 }
                 html += '</div>';
             });
@@ -1154,14 +1166,14 @@ function previewConfig() {
 }
 
 function importDriver() {
-    var json = $('#driverInput').val().trim();
-    if (!json) {
-        $('#importFeedback').html('<div class="alert alert-warning">Please paste JSON first.</div>');
+    var template = $('#driverInput').val().trim();
+    if (!template) {
+        $('#importFeedback').html('<div class="alert alert-warning">Please paste a template first.</div>');
         return;
     }
     $('#importFeedback').html('<div class="alert alert-info">Importing...</div>');
     $.post('ajax.php?module=quickprovisioner&command=import_driver', {
-        json: json,
+        template: template,
         csrf_token: '<?= $csrf_token ?>'
     }, function(r) {
         if (r.status) {
@@ -1176,43 +1188,22 @@ function importDriver() {
     });
 }
 
-function showExampleJSON() {
-    var example = JSON.stringify({
-        "manufacturer": "Yealink",
-        "model": "T48G",
-        "display_name": "Yealink T48G",
-        "max_line_keys": 29,
-        "button_layout": "grid",
-        "svg_fallback": true,
-        "notes": "Wallpaper: 800x480 recommended.",
-        "configurable_options": [
-            {
-                "name": "phone_setting.keyboard_lock",
-                "type": "bool",
-                "default": 1,
-                "label": "Enable Phone Lock"
-            },
-            {
-                "name": "phone_setting.keyboard_lock.password",
-                "type": "text",
-                "default": "1234",
-                "label": "Unlock PIN"
-            }
-        ],
-        "visual_editor": {
-            "screen_width": 800,
-            "screen_height": 480,
-            "remote_image_url": "https://example.com/t48g.png",
-            "schematic": { /* ... */ },
-            "keys": [ /* ... generated grid ... */ ]
-        },
-        "provisioning": {
-            "content_type": "text/plain",
-            "filename_pattern": "{mac}.cfg",
-            "type_mapping": {"line": "15", "speed_dial": "13", "blf": "16"},
-            "template": "#!version:1.0.0.1\naccount.1.enable = 1\n{{line_keys_loop}}\nlinekey.{{index}}.type = {{type}}\n{{/line_keys_loop}}"
-        }
-    }, null, 2);
+function uploadTemplateFile() {
+    var fileInput = document.getElementById('templateFileUpload');
+    if (!fileInput.files || !fileInput.files[0]) {
+        $('#importFeedback').html('<div class="alert alert-warning">Please select a template file first.</div>');
+        return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        $('#driverInput').val(e.target.result);
+        importDriver();
+    };
+    reader.readAsText(fileInput.files[0]);
+}
+
+function showExampleTemplate() {
+    var example = '{{! META: {\n  "manufacturer": "Yealink",\n  "model_family": "T4x",\n  "display_name": "Yealink T4x Custom",\n  "config_format": "cfg",\n  "content_type": "text/plain",\n  "filename_pattern": "{mac}.cfg",\n  "supported_models": ["T48G"],\n  "max_line_keys": 29,\n  "type_mapping": {"line": 15, "blf": 16, "speed_dial": 13},\n  "categories": [\n    {"id": "sip", "label": "SIP", "icon": "📞", "order": 1}\n  ],\n  "variables": [\n    {"name": "sip_server", "category": "sip", "description": "SIP server address", "example": "pbx.example.com", "default": ""}\n  ]\n} }}\n#!version:1.0.0.1\n{{#lines}}\naccount.{{line_index}}.enable = 1\naccount.{{line_index}}.user_name = {{user_name}}\naccount.{{line_index}}.password = {{password}}\naccount.{{line_index}}.sip_server.1.address = {{sip_server}}\n{{/lines}}';
     $('#driverInput').val(example);
 }
 
@@ -1572,25 +1563,9 @@ $('#deviceForm').submit(function(e) {
         return;
     }
 
-    // Validate required configurable options
+    // Validate configurable options (META variables have no required flag)
     var model = $('#model').val();
     var profile = profiles[model];
-    if (profile && profile.configurable_options) {
-        var missingRequired = [];
-        profile.configurable_options.forEach(function(opt) {
-            if (opt.required) {
-                var fieldValue = $('[name="custom_options[' + opt.name + ']"]').val();
-                if (!fieldValue || fieldValue.trim() === '') {
-                    missingRequired.push(opt.label);
-                }
-            }
-        });
-        
-        if (missingRequired.length > 0) {
-            alert('Please fill in the following required fields:\n\n• ' + missingRequired.join('\n• '));
-            return;
-        }
-    }
 
     // Prepare form data
     // First, collect all form data
@@ -1644,23 +1619,34 @@ function updateRightColumnHeader() {
 function updateScreenDimensions() {
     var model = $('#model').val();
     var profile = profiles[model];
-    if (profile && profile.visual_editor) {
-        $('#screenWidth').text(profile.visual_editor.screen_width || '--');
-        $('#screenHeight').text(profile.visual_editor.screen_height || '--');
-    } else {
-        $('#screenWidth').text('--');
-        $('#screenHeight').text('--');
+    var width = 800, height = 480; // defaults
+    if (profile && profile.wallpaper_specs) {
+        // Try to find specs for the current model
+        var specs = profile.wallpaper_specs[model] || profile.wallpaper_specs;
+        if (specs && specs.width) width = specs.width;
+        if (specs && specs.height) height = specs.height;
+    } else if (profile && profile.visual_editor) {
+        width = profile.visual_editor.screen_width || width;
+        height = profile.visual_editor.screen_height || height;
     }
+    $('#screenWidth').text(width);
+    $('#screenHeight').text(height);
 }
 
 // Update handset settings preview (live config)
 function updateHandsetSettingsPreview() {
     var model = $('#model').val();
     var profile = profiles[model];
+    var source = templateSources[model];
     
-    if (!profile || !profile.provisioning || !profile.provisioning.template) {
-        $('#liveConfigPreview').val('No template loaded yet');
-        return;
+    if (!source) {
+        // Fall back to legacy provisioning.template if available
+        if (profile && profile.provisioning && profile.provisioning.template) {
+            source = profile.provisioning.template;
+        } else {
+            $('#liveConfigPreview').val('No template loaded yet');
+            return;
+        }
     }
     
     // Get current values from left column
@@ -1669,7 +1655,7 @@ function updateHandsetSettingsPreview() {
     var mac = $('#mac').val() || '[MAC]';
     
     // Simple variable replacement for preview
-    var template = profile.provisioning.template;
+    var template = source;
     template = template.replace(/\{\{extension\}\}/g, ext);
     template = template.replace(/\{\{password\}\}/g, secret);
     template = template.replace(/\{\{mac\}\}/g, mac.toUpperCase());
@@ -1868,8 +1854,126 @@ function deleteAssetFromGallery(filename) {
 // END NEW FUNCTIONS
 // ========================================
 
+// Ringtone management functions
+function uploadRingtone() {
+    var fileInput = document.getElementById('ringtoneUpload');
+    if (!fileInput.files || !fileInput.files[0]) {
+        alert('Please select a ringtone file first.');
+        return;
+    }
+    var formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('csrf_token', '<?= $csrf_token ?>');
+    $.ajax({
+        url: 'ajax.php?module=quickprovisioner&command=upload_ringtone',
+        type: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        dataType: 'json',
+        success: function(r) {
+            if (r.status) {
+                alert('Ringtone uploaded successfully.');
+                fileInput.value = '';
+                loadRingtones();
+            } else {
+                alert('Error: ' + (r.message || 'Upload failed'));
+            }
+        },
+        error: function() { alert('Ringtone upload failed.'); }
+    });
+}
+
+function loadRingtones() {
+    $.post('ajax.php?module=quickprovisioner&command=list_ringtones', {csrf_token: '<?= $csrf_token ?>'}, function(r) {
+        if (r.status && r.files) {
+            var html = '';
+            r.files.forEach(function(item) {
+                var escaped = $('<div>').text(item.filename).html();
+                html += '<div class="col-xs-6 col-sm-4 col-md-3" style="margin-bottom:10px;">';
+                html += '<div class="panel panel-default"><div class="panel-body text-center">';
+                html += '<i class="fa fa-music"></i> ' + escaped;
+                html += '<br><button class="btn btn-xs btn-danger" onclick="deleteRingtone(\'' + escaped.replace(/'/g, "\\'") + '\')">Delete</button>';
+                html += '</div></div></div>';
+            });
+            $('#ringtoneList').html(html);
+        }
+    }, 'json');
+}
+
+function deleteRingtone(filename) {
+    if (!confirm('Delete ringtone "' + filename + '"?')) return;
+    $.post('ajax.php?module=quickprovisioner&command=delete_ringtone', {filename: filename, csrf_token: '<?= $csrf_token ?>'}, function(r) {
+        if (r.status) {
+            loadRingtones();
+        } else {
+            alert('Error: ' + (r.message || 'Delete failed'));
+        }
+    }, 'json');
+}
+
+// Firmware management functions
+function uploadFirmware() {
+    var fileInput = document.getElementById('firmwareUpload');
+    if (!fileInput.files || !fileInput.files[0]) {
+        alert('Please select a firmware file first.');
+        return;
+    }
+    var formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('csrf_token', '<?= $csrf_token ?>');
+    $.ajax({
+        url: 'ajax.php?module=quickprovisioner&command=upload_firmware',
+        type: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        dataType: 'json',
+        success: function(r) {
+            if (r.status) {
+                alert('Firmware uploaded successfully.');
+                fileInput.value = '';
+                loadFirmware();
+            } else {
+                alert('Error: ' + (r.message || 'Upload failed'));
+            }
+        },
+        error: function() { alert('Firmware upload failed.'); }
+    });
+}
+
+function loadFirmware() {
+    $.post('ajax.php?module=quickprovisioner&command=list_firmware', {csrf_token: '<?= $csrf_token ?>'}, function(r) {
+        if (r.status && r.files) {
+            var html = '';
+            r.files.forEach(function(item) {
+                var escaped = $('<div>').text(item.filename).html();
+                html += '<div class="col-xs-6 col-sm-4 col-md-3" style="margin-bottom:10px;">';
+                html += '<div class="panel panel-default"><div class="panel-body text-center">';
+                html += '<i class="fa fa-microchip"></i> ' + escaped;
+                html += '<br><button class="btn btn-xs btn-danger" onclick="deleteFirmware(\'' + escaped.replace(/'/g, "\\'") + '\')">Delete</button>';
+                html += '</div></div></div>';
+            });
+            $('#firmwareList').html(html);
+        }
+    }, 'json');
+}
+
+function deleteFirmware(filename) {
+    if (!confirm('Delete firmware "' + filename + '"?')) return;
+    $.post('ajax.php?module=quickprovisioner&command=delete_firmware', {filename: filename, csrf_token: '<?= $csrf_token ?>'}, function(r) {
+        if (r.status) {
+            loadFirmware();
+        } else {
+            alert('Error: ' + (r.message || 'Delete failed'));
+        }
+    }, 'json');
+}
+
 loadDevices();
 loadTemplates();
+loadRingtones();
+loadFirmware();
 
 // Update Management Functions
 function checkForUpdates() {

@@ -1,16 +1,16 @@
 <module>
     <rawname>quickprovisioner</rawname>
-    <name>HH Quick Provisioner</name>
-    <version>2.2.0</version>
-    <publisher>HH</publisher>
+    <name>Quick Provisioner</name>
+    <version>3.0.0</version>
+    <publisher>Ezra90</publisher>
     <license>GPLv3</license>
     <type>tool</type>
     <category>Applications</category>
     <description>
-        Enterprise Provisioning Tool v2.2.0. Features: Per-Device Provisioning Authentication, Local Network Detection, Visual Key Editor with Paging, Protected Asset Manager, File-based Handset Model Templates with Import/Download/Delete, Kid Mode PIN, Wallpaper Resizing, Schematic Previews, Contact Management, Dynamic Provisioning with Custom Overrides.
+        Standalone VoIP Provisioning Module v3.0.0 for FreePBX. Always-on DMS that serves phone configurations, wallpapers, ringtones, firmware, and phonebooks. Uses Mustache templates compatible with Pocket Provisioner Android app. Supports Yealink T-Series, Polycom VVX/Edge, and Cisco MPP 8800 handsets.
     </description>
     <menuitems>
-        <quickprovisioner>HH Quick Provisioner</quickprovisioner>
+        <quickprovisioner>Quick Provisioner</quickprovisioner>
     </menuitems>
     <depends>
         <version>13.0</version>

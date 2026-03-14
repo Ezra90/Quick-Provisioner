@@ -1,0 +1,188 @@
+{{! META: {
+  "manufacturer": "Polycom",
+  "model_family": "VVX/Edge",
+  "display_name": "Polycom VVX / Poly Edge",
+  "config_format": "xml",
+  "content_type": "application/xml",
+  "filename_pattern": "{mac}.xml",
+  "supported_models": ["VVX150", "VVX250", "VVX350", "VVX450", "VVX1500", "Edge E350", "Edge E450"],
+  "max_line_keys": 12,
+  "wallpaper_specs": {
+    "VVX150": {"width": 320, "height": 240},
+    "VVX250": {"width": 320, "height": 240},
+    "VVX350": {"width": 480, "height": 272},
+    "VVX450": {"width": 480, "height": 272},
+    "VVX1500": {"width": 800, "height": 480},
+    "Edge E350": {"width": 320, "height": 240},
+    "Edge E450": {"width": 480, "height": 272}
+  },
+  "type_mapping": {
+    "line": 1,
+    "speed_dial": 2,
+    "blf": 3
+  },
+  "categories": [
+    {"id": "sip",          "label": "SIP & Registration",    "icon": "📞", "order": 1},
+    {"id": "display",      "label": "Display & Audio",        "icon": "📱", "order": 2},
+    {"id": "security",     "label": "Security",               "icon": "🔑", "order": 3},
+    {"id": "network",      "label": "Network",                "icon": "🌐", "order": 4},
+    {"id": "call_features","label": "Call Features",          "icon": "📲", "order": 5},
+    {"id": "provisioning", "label": "Provisioning & Time",    "icon": "🔧", "order": 6},
+    {"id": "diagnostics",  "label": "Diagnostics & Logs",     "icon": "🔍", "order": 7}
+  ],
+  "variables": [
+    {"name": "sip_server",       "category": "sip",           "description": "Primary SIP registrar address.", "example": "pbx.example.com", "default": ""},
+    {"name": "sip_port",         "category": "sip",           "description": "SIP signalling port.", "example": "5060", "default": "5060"},
+    {"name": "reg_expiry",       "category": "sip",           "description": "Registration expiry in seconds.", "example": "3600", "default": "3600"},
+    {"name": "outbound_proxy_host","category":"sip",           "description": "Outbound proxy hostname or IP.", "example": "sbc.example.com", "default": ""},
+    {"name": "backup_server",    "category": "sip",           "description": "Backup SIP registrar address.", "example": "pbx2.example.com", "default": ""},
+    {"name": "voicemail_number", "category": "call_features", "description": "MWI subscribe / voicemail number.", "example": "*97", "default": ""},
+    {"name": "wallpaper_url",    "category": "display",       "description": "Background image URL or filename.", "example": "http://192.168.1.1/media/logo.jpg", "default": ""},
+    {"name": "screensaver_timeout","category":"display",       "description": "Idle seconds before screensaver (0 = disabled).", "example": "120", "default": "0"},
+    {"name": "admin_password",   "category": "security",      "description": "Local admin web UI password.", "example": "Str0ngP@ss", "default": ""},
+    {"name": "web_ui_enabled",   "category": "security",      "description": "Enable (1) or disable (0) the web management interface.", "example": "1", "default": "1"},
+    {"name": "cdp_lldp_enabled", "category": "network",       "description": "Enable (1) CDP and LLDP neighbour discovery.", "example": "1", "default": "1"},
+    {"name": "auto_answer",      "category": "call_features", "description": "Enable (1) auto-answer on the first line.", "example": "1", "default": "0"},
+    {"name": "dnd_enabled",      "category": "call_features", "description": "Enable (1) Do Not Disturb by default.", "example": "0", "default": "0"},
+    {"name": "call_waiting",     "category": "call_features", "description": "Enable (1) call waiting.", "example": "1", "default": "1"},
+    {"name": "cfw_always",       "category": "call_features", "description": "Call forward unconditionally to this number.", "example": "+61400000000", "default": ""},
+    {"name": "cfw_busy",         "category": "call_features", "description": "Call forward on busy to this number.", "example": "voicemail", "default": ""},
+    {"name": "cfw_no_answer",    "category": "call_features", "description": "Call forward on no-answer to this number.", "example": "voicemail", "default": ""},
+    {"name": "dial_plan",        "category": "call_features", "description": "Polycom digitmap dial plan string.", "example": "[2-9]11|0T|011xxx.T|[0-9]11|[0-9]{7,15}", "default": ""},
+    {"name": "ntp_server",       "category": "provisioning",  "description": "Primary NTP time server hostname or IP.", "example": "0.pool.ntp.org", "default": "0.pool.ntp.org"},
+    {"name": "gmt_offset",       "category": "provisioning",  "description": "GMT offset in seconds for the SNTP client.", "example": "36000", "default": "0"},
+    {"name": "provisioning_url", "category": "provisioning",  "description": "Provisioning server base URL.", "example": "http://192.168.1.1/admin/modules/quickprovisioner/provision.php", "default": ""},
+    {"name": "firmware_url",     "category": "provisioning",  "description": "Firmware URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1/firmware/sip.ld", "default": ""},
+    {"name": "syslog_server",    "category": "diagnostics",   "description": "Remote syslog server hostname or IP.", "example": "192.168.1.50", "default": ""},
+    {"name": "ringtone_url",     "category": "display",       "description": "Custom ringtone URL (WAV file).", "example": "http://192.168.1.1/ringtones/MyRing.wav", "default": ""}
+  ]
+} }}
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<PHONE_CONFIG>
+  <REGISTRATION
+{{#lines}}
+    reg.{{line_index}}.label="{{label}}"
+    reg.{{line_index}}.displayName="{{display_name}}"
+    reg.{{line_index}}.address="{{user_name}}"
+    reg.{{line_index}}.auth.userId="{{auth_name}}"
+    reg.{{line_index}}.auth.password="{{password}}"
+    reg.{{line_index}}.server.1.address="{{sip_server}}"
+    reg.{{line_index}}.server.1.port="{{sip_port}}"
+    reg.{{line_index}}.server.1.expires="{{expires}}"
+{{#has_voicemail}}
+    msg.mwi.{{line_index}}.subscribe="{{user_name}}"
+    msg.mwi.{{line_index}}.callBackMode="contact"
+    msg.mwi.{{line_index}}.callBack="{{voicemail_number}}"
+{{/has_voicemail}}
+{{#has_auto_answer}}
+    reg.{{line_index}}.autoAnswerAll="{{auto_answer}}"
+{{/has_auto_answer}}
+{{#has_cfw_always}}
+    reg.{{line_index}}.forward.all.enable="1"
+    reg.{{line_index}}.forward.all.contact="{{cfw_always}}"
+{{/has_cfw_always}}
+{{#has_cfw_busy}}
+    reg.{{line_index}}.forward.busy.enable="1"
+    reg.{{line_index}}.forward.busy.contact="{{cfw_busy}}"
+{{/has_cfw_busy}}
+{{#has_cfw_no_answer}}
+    reg.{{line_index}}.forward.noanswer.enable="1"
+    reg.{{line_index}}.forward.noanswer.contact="{{cfw_no_answer}}"
+{{/has_cfw_no_answer}}
+{{/lines}}
+  />
+{{#has_outbound_proxy}}
+  <voIpProt
+    voIpProt.SIP.outboundProxy.address="{{outbound_proxy_host}}"
+    voIpProt.SIP.outboundProxy.port="{{outbound_proxy_port}}"
+  />
+{{/has_outbound_proxy}}
+{{#has_dnd}}
+  <feature
+    feature.presence.enabled="1"
+    feature.directedCallPickup.enabled="1"
+    feature.enhancedFeatureKeys.enabled="1"
+    feature.doNotDisturb.enabled="{{dnd_enabled}}"
+    dnd.default="{{dnd_enabled}}"
+  />
+{{/has_dnd}}
+{{^has_dnd}}
+  <feature
+    feature.presence.enabled="1"
+    feature.directedCallPickup.enabled="1"
+    feature.enhancedFeatureKeys.enabled="1"
+  />
+{{/has_dnd}}
+{{#has_call_waiting}}
+  <callWaiting
+    call.waiting.enable="{{call_waiting}}"
+  />
+{{/has_call_waiting}}
+{{#has_dial_plan}}
+  <dialplan
+    dialplan.digitmap="{{dial_plan}}"
+    dialplan.digitmap.timeOut="3|3"
+  />
+{{/has_dial_plan}}
+{{#attendant_keys}}
+  <attendant
+    attendant.resourceList.{{position}}.address="sip:{{key_value}}@{{sip_server}}"
+    attendant.resourceList.{{position}}.label="{{key_label}}"
+    attendant.resourceList.{{position}}.callAddress="sip:{{key_value}}@{{sip_server}}"
+  />
+{{/attendant_keys}}
+  <qos
+    qos.ethernet.callControl.user_priority="5"
+    qos.ip.callControl.dscp="46"
+  />
+{{#wallpaper_url}}
+  <bg>
+    <bg.color>
+      <bg.color.bm bg.color.bm.1.name="{{wallpaper_url}}" />
+    </bg.color>
+  </bg>
+{{/wallpaper_url}}
+{{#has_screensaver_timeout}}
+  <screensaver
+    idleTimeout.enable="1"
+    idleTimeout.timeout="{{screensaver_timeout}}"
+  />
+{{/has_screensaver_timeout}}
+  <tcpIpApp
+    tcpIpApp.sntp.address="{{ntp_server}}"
+    tcpIpApp.sntp.gmtOffset="{{gmt_offset}}"
+  />
+{{#has_custom_ringtone}}
+  <se.rt>
+    <se.rt.file se.rt.file.1.name="{{ringtone_url}}" />
+  </se.rt>
+{{/has_custom_ringtone}}
+{{#has_cdp_lldp}}
+  <lldp
+    lldp.enable="{{cdp_lldp_enabled}}"
+    cdp.enable="{{cdp_lldp_enabled}}"
+  />
+{{/has_cdp_lldp}}
+{{#has_syslog}}
+  <log
+    device.syslog.serverName="{{syslog_server}}"
+    device.syslog.transport="UDP"
+    device.syslog.renderLevel="5"
+  />
+{{/has_syslog}}
+  <DEVICE
+    device.auth.localAdminPassword="{{admin_password}}"
+    device.prov.serverName="{{provisioning_url}}"
+    device.prov.serverType="HTTP"
+    device.prov.user="{{provision_user}}"
+    device.prov.password="{{provision_pass}}"
+{{#has_web_ui}}
+    device.web.enabled="{{web_ui_enabled}}"
+{{/has_web_ui}}
+  />
+{{#has_firmware}}
+  <UPDATER
+    updater.application.url="{{firmware_url}}"
+  />
+{{/has_firmware}}
+</PHONE_CONFIG>

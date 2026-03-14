@@ -1,5 +1,5 @@
 #!/bin/bash
-# qp-update - HH Quick Provisioner Update Script
+# qp-update - Quick Provisioner Update Script
 # Install to /usr/local/bin/qp-update with: sudo cp scripts/qp-update /usr/local/bin/ && sudo chmod +x /usr/local/bin/qp-update
 # Usage: sudo qp-update
 
@@ -9,20 +9,15 @@ set -u  # Exit on undefined variable
 MODULE_DIR="/var/www/html/admin/modules/quickprovisioner"
 WEB_USER="asterisk"
 WEB_GROUP="asterisk"
-GIT_SSH_KEY="/home/hhvoip/.ssh/id_github"
 
 echo "========================================"
-echo " HH Quick Provisioner - Update Script"
+echo " Quick Provisioner - Update Script"
 echo "========================================"
 
 cd "$MODULE_DIR" || exit 1
 
 CURRENT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 echo "Current commit: $CURRENT_COMMIT"
-
-if [ -f "$GIT_SSH_KEY" ] && [ -r "$GIT_SSH_KEY" ]; then
-    export GIT_SSH_COMMAND="ssh -i $GIT_SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-fi
 
 echo ""
 echo "Fetching updates from GitHub..."
@@ -51,22 +46,16 @@ fi
 echo ""
 echo "Fixing permissions..."
 chown -R "$WEB_USER:$WEB_GROUP" "$MODULE_DIR"
-find "$MODULE_DIR" -type f -exec chmod 644 {} \;
-find "$MODULE_DIR" -type d -exec chmod 755 {} \;
-chmod 775 "$MODULE_DIR/templates" "$MODULE_DIR/assets" "$MODULE_DIR/assets/uploads" 2>/dev/null || true
-chmod g+s "$MODULE_DIR/templates" "$MODULE_DIR/assets" "$MODULE_DIR/assets/uploads" 2>/dev/null || true
+find "$MODULE_DIR" -type f -exec chmod 0664 {} \;
+find "$MODULE_DIR" -type d -exec chmod 0775 {} \;
 
-echo "Fixing FreePBX admin directory permissions..."
-chown -R "$WEB_USER:$WEB_GROUP" /var/www/html/admin 2>/dev/null || true
-
-echo "Fixing Asterisk runtime permissions..."
-if [ -d /var/run/asterisk ]; then
-    chown -R "$WEB_USER:$WEB_GROUP" /var/run/asterisk 2>/dev/null || true
-    chmod 755 /var/run/asterisk 2>/dev/null || true
-    if [ -S /var/run/asterisk/asterisk.ctl ]; then
-        chmod 660 /var/run/asterisk/asterisk.ctl 2>/dev/null || true
-    fi
-fi
+# Ensure asset directories exist and have correct permissions
+for dir in templates assets assets/uploads assets/ringtones assets/firmware assets/phonebook; do
+    target="$MODULE_DIR/$dir"
+    mkdir -p "$target" 2>/dev/null || true
+    chmod 0775 "$target" 2>/dev/null || true
+    chown "$WEB_USER:$WEB_GROUP" "$target" 2>/dev/null || true
+done
 
 VERSION=$(grep -oP '(?<=<version>)[^<]+' "$MODULE_DIR/module.xml" 2>/dev/null | head -1 || echo "unknown")
 
@@ -75,11 +64,11 @@ if [ "$UPDATES_APPLIED" -eq 1 ]; then
     echo "Running FreePBX chown to fix all file permissions..."
     fwconsole chown || echo "Warning: fwconsole chown failed"
     echo ""
-    echo "Restarting FreePBX..."
-    if fwconsole restart; then
-        echo "FreePBX restarted successfully."
+    echo "Reloading FreePBX..."
+    if fwconsole reload; then
+        echo "FreePBX reloaded successfully."
     else
-        echo "Warning: FreePBX restart failed. Please restart manually."
+        echo "Warning: FreePBX reload failed. Please reload manually."
     fi
     echo ""
 fi
