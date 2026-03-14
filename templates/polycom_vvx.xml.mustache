@@ -55,7 +55,34 @@
     {"name": "firmware_url",     "category": "provisioning",  "description": "Firmware URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1/firmware/sip.ld", "default": ""},
     {"name": "syslog_server",    "category": "diagnostics",   "description": "Remote syslog server hostname or IP.", "example": "192.168.1.50", "default": ""},
     {"name": "ringtone_url",     "category": "display",       "description": "Custom ringtone URL (WAV file).", "example": "http://192.168.1.1/ringtones/MyRing.wav", "default": ""}
-  ]
+  ],
+  "visual_editor": {
+    "svg_fallback": true,
+    "expandable_layout": false,
+    "schematic": {
+      "chassis_width": 340,
+      "chassis_height": 540,
+      "screen_x": 65,
+      "screen_y": 58,
+      "screen_width": 210,
+      "screen_height": 150
+    },
+    "keys_per_page": 12,
+    "keys": [
+      {"index":1,  "x":12,  "y":66,  "width":44, "height":24, "page":1, "side":"left"},
+      {"index":2,  "x":12,  "y":94,  "width":44, "height":24, "page":1, "side":"left"},
+      {"index":3,  "x":12,  "y":122, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":4,  "x":12,  "y":150, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":5,  "x":12,  "y":178, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":6,  "x":286, "y":66,  "width":44, "height":24, "page":1, "side":"right"},
+      {"index":7,  "x":286, "y":94,  "width":44, "height":24, "page":1, "side":"right"},
+      {"index":8,  "x":286, "y":122, "width":44, "height":24, "page":1, "side":"right"},
+      {"index":9,  "x":286, "y":150, "width":44, "height":24, "page":1, "side":"right"},
+      {"index":10, "x":286, "y":178, "width":44, "height":24, "page":1, "side":"right"},
+      {"index":11, "x":12,  "y":66,  "width":44, "height":24, "page":2, "side":"left"},
+      {"index":12, "x":286, "y":66,  "width":44, "height":24, "page":2, "side":"right"}
+    ]
+  }
 } }}
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <PHONE_CONFIG>

@@ -1,60 +1,25 @@
-# PHP and Composer
-vendor/
-composer.lock
-.php_cs.cache
-.phpunit.result.cache
-
 # IDE and Editor Files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
-.project
-.settings/
 *.sublime-project
 *.sublime-workspace
 
-# FreePBX Specific
-admin/
-asterisk/
-configs/
-dbug/
-install.log
-modules/builtin/
-modules/*/module.xml.php
-
-# Backup and Temporary Files
-*.bak
-*.backup
-*.tmp
-*.temp
-*.log
-*.swp
-*.swo
-
-# Operating System Files
+# OS Files
 .DS_Store
 Thumbs.db
-.directory
 
-# PHP Session and Cache Files
-session/
+# Temp and Backup
+*.bak
+*.tmp
+*.log
+
+# Runtime Directories
+assets/
 cache/
 tmp/
-.cache/
 
-# Environment Configuration
+# Environment
 .env
-.env.local
-.env.*.local
-
-# Development and Testing
-node_modules/
-.phpcs-cache
-coverage/
-build/
-
-# FreePBX Module Development
-module.xml.php

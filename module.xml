@@ -1,13 +1,12 @@
 <module>
     <rawname>quickprovisioner</rawname>
     <name>Quick Provisioner</name>
-    <version>3.0.0</version>
+    <version>0.1-dev</version>
     <publisher>Ezra90</publisher>
-    <license>GPLv3</license>
     <type>tool</type>
     <category>Applications</category>
     <description>
-        Standalone VoIP Provisioning Module v3.0.0 for FreePBX. Always-on DMS that serves phone configurations, wallpapers, ringtones, firmware, and phonebooks. Uses Mustache templates compatible with Pocket Provisioner Android app. Supports Yealink T-Series, Polycom VVX/Edge, and Cisco MPP 8800 handsets.
+        Standalone VoIP Provisioning Module for FreePBX. Always-on DMS that serves phone configurations, wallpapers, ringtones, firmware, and phonebooks. Uses Mustache templates compatible with Pocket Provisioner Android app. Supports Yealink T-Series, Polycom VVX/Edge, and Cisco MPP 8800 handsets.
     </description>
     <menuitems>
         <quickprovisioner>Quick Provisioner</quickprovisioner>

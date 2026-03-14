@@ -1,6 +1,6 @@
 <?php
 /**
- * Quick Provisioner - Installation Script v3.0.0
+ * Quick Provisioner - Installation Script
  *
  * This file contains FreePBX module lifecycle hooks for installation.
  * Refactored for procedural execution as required by FreePBX.
@@ -120,6 +120,6 @@ foreach ($protected_dirs as $dir => $htaccess_content) {
 }
 
 if (class_exists('FreePBX')) {
-    FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick Provisioner: Module installation/check completed (v3.0.0)");
+    FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick Provisioner: Module installation/check completed");
 }
 ?>

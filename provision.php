@@ -1,5 +1,5 @@
 <?php
-// provision.php - Quick Provisioner v3.0.0 - Mustache Provisioning Engine
+// provision.php - Quick Provisioner - Mustache Provisioning Engine
 include '/etc/freepbx.conf';
 require_once __DIR__ . '/MustacheEngine.php';
 
