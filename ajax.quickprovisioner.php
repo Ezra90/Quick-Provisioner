@@ -1,5 +1,5 @@
 <?php
-// ajax.quickprovisioner.php - HH Quick Provisioner v2.2 - Backend API
+// ajax.quickprovisioner.php - HH Quick Provisioner v3.0.0 - Backend API
 
 // Configuration constants (only define if not already defined by Quickprovisioner.class.php)
 if (!defined('QP_FREEPBX_BASE_PATH')) {
@@ -14,6 +14,8 @@ if (!defined('QP_FWCONSOLE_RELOAD')) {
 if (!defined('QP_FWCONSOLE_RESTART')) {
     define('QP_FWCONSOLE_RESTART', '/usr/sbin/fwconsole restart');
 }
+
+require_once __DIR__ . '/MustacheEngine.php';
 
 function qp_is_local_network() {
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -229,15 +231,16 @@ switch ($action) {
         $device = $db->getRow("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id]);
         if (!$device) { $response['message'] = 'Device not found'; break; }
         $model = basename($device['model']); // Sanitize to prevent path traversal
-        $profile_path = $templates_dir . '/' . $model . '.json';
-        if (!file_exists($profile_path)) { $response['message'] = 'Profile not found'; break; }
-        $profile_json = file_get_contents($profile_path);
-        $profile = json_decode($profile_json, true);
-        if ($profile === null) {
-            $response['message'] = 'Invalid template JSON for model ' . $model;
-            break;
-        }
-        $template = $device['custom_template_override'] ? $device['custom_template_override'] : $profile['provisioning']['template'] ?? '';
+
+        // Resolve Mustache template file
+        $template_file = qp_resolve_template_file($model, $templates_dir);
+        if (!$template_file) { $response['message'] = 'Template not found for model: ' . $model; break; }
+        $template_source = file_get_contents($template_file);
+        if ($template_source === false) { $response['message'] = 'Failed to read template'; break; }
+
+        $meta = qp_parse_template_meta($template_source);
+        if ($meta === null) { $response['message'] = 'Template has no valid META block'; break; }
+
         $ext = $device['extension'];
 
         // Fetch user info and secret with error handling
@@ -248,7 +251,6 @@ switch ($action) {
         if (!empty($device['custom_sip_secret'])) {
             $secret = $device['custom_sip_secret'];
         } else {
-            // Otherwise fetch from FreePBX
             try {
                 $deviceInfo = \FreePBX::Core()->getDevice($ext);
                 if ($deviceInfo && is_array($deviceInfo) && isset($deviceInfo['secret'])) {
@@ -273,131 +275,46 @@ switch ($action) {
 
         $server_ip = $_SERVER['SERVER_ADDR'];
         $server_port = \FreePBX::Sipsettings()->get('bindport') ?? '5060';
+
+        // Build wallpaper URL using META wallpaper_specs for dimensions
         $wpUrl = "";
         if (!empty($device['wallpaper'])) {
             $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
             $host = $_SERVER['HTTP_HOST'];
-            // Do not embed credentials in URL - device will authenticate via Basic Auth headers
-            $wpUrl = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=" . strtoupper(preg_replace('/[^A-F0-9]/', '', $device['mac']));
+            $mac_clean = strtoupper(preg_replace('/[^A-F0-9]/', '', $device['mac']));
+            $wpUrl = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=" . $mac_clean;
+            // Append screen dimensions from Mustache META wallpaper_specs
+            $wallpaper_specs = $meta['wallpaper_specs'] ?? [];
+            $modelUpper = strtoupper($model);
+            if (isset($wallpaper_specs[$model])) {
+                $wpUrl .= "&w=" . (int)$wallpaper_specs[$model]['width'] . "&h=" . (int)$wallpaper_specs[$model]['height'];
+            } elseif (isset($wallpaper_specs[$modelUpper])) {
+                $wpUrl .= "&w=" . (int)$wallpaper_specs[$modelUpper]['width'] . "&h=" . (int)$wallpaper_specs[$modelUpper]['height'];
+            }
         }
-        $vars = [
-            '{{mac}}' => strtoupper(preg_replace('/[^A-F0-9]/', '', $device['mac'])),
-            '{{extension}}' => $ext,
-            '{{password}}' => $secret,
-            '{{display_name}}' => $display_name,
-            '{{server_host}}' => $server_ip,
-            '{{server_port}}' => $server_port,
-            '{{wallpaper}}' => $wpUrl,
-            '{{security_pin}}' => $device['security_pin'] ?? ''
+
+        // Build provisioning context using Mustache engine
+        $server_info = [
+            'server_ip'        => $server_ip,
+            'server_port'      => $server_port,
+            'sip_port'         => $server_port,
+            'display_name'     => $display_name,
+            'secret'           => $secret,
+            'wallpaper_url'    => $wpUrl,
+            'provisioning_url' => '',
         ];
-        // Decode custom options from device
-        $custom_options = json_decode($device['custom_options_json'], true) ?? [];
-        foreach ($custom_options as $key => $value) {
-            if ($value !== '') {
-                $vars['{{' . $key . '}}'] = htmlspecialchars($value);
-            }
+        $context = qp_build_provisioning_context($device, $meta, $server_info);
+
+        // If there is a custom template override, use that as raw Mustache source
+        if (!empty($device['custom_template_override'])) {
+            $render_source = $device['custom_template_override'];
+        } else {
+            // Strip META block from template before rendering
+            $render_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*?\}\s*\}\}\s*/', '', $template_source);
         }
-        $template = preg_replace_callback('/{{if (.*?)}}(.*?){{\/if}}/s', function($m) use ($vars) {
-            $var = trim($m[1]);
-            $content = $m[2];
-            if (isset($vars['{{' . $var . '}}']) && $vars['{{' . $var . '}}']) {
-                return $content;
-            }
-            return '';
-        }, $template);
-        if (preg_match('/{{line_keys_loop}}(.*?){{\/line_keys_loop}}/s', $template, $matches)) {
-            $loopContent = $matches[1];
-            $keys = json_decode($device['keys_json'], true) ?? [];
-            $builtLoop = '';
-            usort($keys, function($a, $b) { return $a['index'] - $b['index']; });
-            foreach ($keys as $k) {
-                $item = $loopContent;
-                $rawType = $k['type'] ?? 'line';
-                $mappedType = $profile['provisioning']['type_mapping'][$rawType] ?? $rawType;
-                $item = str_replace('{{index}}', $k['index'], $item);
-                $item = str_replace('{{type}}', $mappedType, $item);
-                foreach ($k as $keyName => $keyValue) {
-                    if ($keyName == 'index' || $keyName == 'type') continue;
-                    $item = str_replace('{{' . $keyName . '}}', htmlspecialchars($keyValue), $item);
-                }
-                $item = preg_replace('/{{[a-z_]+}}/', '', $item);
-                $builtLoop .= $item;
-            }
-            $template = str_replace($matches[0], $builtLoop, $template);
-        }
-        if (preg_match('/{{contacts_loop}}(.*?){{\/contacts_loop}}/s', $template, $matches)) {
-            $loopContent = $matches[1];
-            $contacts = json_decode($device['contacts_json'], true) ?? [];
-            $builtLoop = '';
-            foreach ($contacts as $idx => $c) {
-                $item = $loopContent;
-                $item = str_replace('{{index}}', $idx + 1, $item);
-                $item = str_replace('{{name}}', htmlspecialchars($c['name']), $item);
-                $item = str_replace('{{number}}', htmlspecialchars($c['number']), $item);
-                $item = str_replace('{{custom_label}}', htmlspecialchars($c['custom_label']), $item);
-                $photo_url = "";
-                if (!empty($c['photo'])) {
-                    $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
-                    $host = $_SERVER['HTTP_HOST'];
-                    // Do not embed credentials in URL - device will authenticate via Basic Auth headers
-                    $photo_url = "$protocol://$host/admin/modules/quickprovisioner/media.php?file=" . $c['photo'] . "&mac=" . $vars['{{mac}}'] . "&w=100&h=100&mode=crop";
-                }
-                $item = str_replace('{{photo_url}}', $photo_url, $item);
-                $builtLoop .= $item;
-            }
-            $template = str_replace($matches[0], $builtLoop, $template);
-        }
-        
-        // Generic array repeater handler for digitmap and other custom repeaters
-        if (preg_match_all('/{{([a-z_]+)_loop}}(.*?){{\/\1_loop}}/s', $template, $allMatches, PREG_SET_ORDER)) {
-            foreach ($allMatches as $match) {
-                $loopName = $match[1];
-                // Skip already processed loops
-                if ($loopName === 'line_keys' || $loopName === 'contacts') {
-                    continue;
-                }
-                
-                $loopContent = $match[2];
-                $loopData = [];
-                
-                // Check if template defines the array data source
-                if (isset($profile['provisioning'][$loopName . '_data'])) {
-                    $loopData = $profile['provisioning'][$loopName . '_data'];
-                }
-                // Or check if device has custom data for this loop
-                else if (!empty($device['custom_options_json'])) {
-                    $customOptionsDecoded = json_decode($device['custom_options_json'], true) ?? [];
-                    if (isset($customOptionsDecoded[$loopName . '_data'])) {
-                        $loopData = json_decode($customOptionsDecoded[$loopName . '_data'], true) ?? [];
-                    }
-                }
-                
-                $builtLoop = '';
-                foreach ($loopData as $idx => $item_data) {
-                    $item = $loopContent;
-                    // Replace {{index}} with 1-based index
-                    $item = str_replace('{{index}}', $idx + 1, $item);
-                    // Replace any other variables from the data item
-                    if (is_array($item_data)) {
-                        foreach ($item_data as $key => $value) {
-                            $item = str_replace('{{' . $key . '}}', htmlspecialchars($value), $item);
-                        }
-                    } else {
-                        // If item is a scalar, replace {{value}}
-                        $item = str_replace('{{value}}', htmlspecialchars($item_data), $item);
-                    }
-                    // Clean up any remaining unreplaced variables
-                    $item = preg_replace('/{{[a-z_]+}}/', '', $item);
-                    $builtLoop .= $item;
-                }
-                $template = str_replace($match[0], $builtLoop, $template);
-            }
-        }
-        
-        foreach ($vars as $k => $v) {
-            $template = str_replace($k, $v, $template);
-        }
-        $response = ['status' => true, 'config' => $template];
+
+        $config = qp_render_mustache($render_source, $context);
+        $response = ['status' => true, 'config' => $config];
         break;
 
     case 'upload_file':
@@ -428,6 +345,28 @@ switch ($action) {
         // Auto-resize image if dimensions are provided
         $resize_width = isset($_POST['resize_width']) ? intval($_POST['resize_width']) : 0;
         $resize_height = isset($_POST['resize_height']) ? intval($_POST['resize_height']) : 0;
+        
+        // Auto-detect wallpaper dimensions from Mustache template META if model is specified
+        if ($resize_width === 0 && $resize_height === 0 && !empty($_POST['device_model'])) {
+            $wp_model = basename($_POST['device_model']);
+            $wp_template_file = qp_resolve_template_file($wp_model, $templates_dir);
+            if ($wp_template_file) {
+                $wp_source = file_get_contents($wp_template_file);
+                if ($wp_source !== false) {
+                    $wp_meta = qp_parse_template_meta($wp_source);
+                    if ($wp_meta !== null && !empty($wp_meta['wallpaper_specs'])) {
+                        $wp_specs = $wp_meta['wallpaper_specs'];
+                        if (isset($wp_specs[$wp_model])) {
+                            $resize_width = (int)$wp_specs[$wp_model]['width'];
+                            $resize_height = (int)$wp_specs[$wp_model]['height'];
+                        } elseif (isset($wp_specs[strtoupper($wp_model)])) {
+                            $resize_width = (int)$wp_specs[strtoupper($wp_model)]['width'];
+                            $resize_height = (int)$wp_specs[strtoupper($wp_model)]['height'];
+                        }
+                    }
+                }
+            }
+        }
         
         if ($resize_width > 0 && $resize_height > 0 && function_exists('imagecreatefromjpeg')) {
             // Load source image
@@ -538,27 +477,169 @@ switch ($action) {
         }
         break;
 
+    // === RINGTONE & FIRMWARE ASSET MANAGEMENT ===
+    case 'upload_ringtone':
+        if (!isset($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            $response['message'] = 'Upload error';
+            break;
+        }
+        if ($_FILES['file']['size'] > 1 * 1024 * 1024) {
+            $response['message'] = 'File too large (max 1MB)';
+            break;
+        }
+        $finfo_rt = new finfo(FILEINFO_MIME_TYPE);
+        $mime_rt = $finfo_rt->file($_FILES['file']['tmp_name']);
+        if ($mime_rt !== 'audio/wav' && $mime_rt !== 'audio/x-wav' && $mime_rt !== 'audio/wave') {
+            $response['message'] = 'Invalid file type. Only WAV audio files are allowed.';
+            break;
+        }
+        $rt_name = basename($_FILES['file']['name']);
+        $rt_name = preg_replace('/[^a-zA-Z0-9_.\-]/', '_', $rt_name);
+        $rt_target = __DIR__ . '/assets/ringtones/' . $rt_name;
+        $result = qp_safe_move_upload($_FILES['file']['tmp_name'], $rt_target);
+        if ($result['status']) {
+            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Ringtone uploaded: $rt_name");
+            $response = ['status' => true, 'filename' => $rt_name];
+        } else {
+            $response['message'] = $result['message'];
+        }
+        break;
+
+    case 'upload_firmware':
+        if (!isset($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            $response['message'] = 'Upload error';
+            break;
+        }
+        if ($_FILES['file']['size'] > 100 * 1024 * 1024) {
+            $response['message'] = 'File too large (max 100MB)';
+            break;
+        }
+        $fw_ext = strtolower(pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION));
+        $allowed_fw_ext = ['rom', 'ld', 'loads', 'bin', 'img', 'fw', 'sbn', 'cop', 'pkg'];
+        if (!in_array($fw_ext, $allowed_fw_ext)) {
+            $response['message'] = 'Invalid firmware extension. Allowed: ' . implode(', ', $allowed_fw_ext);
+            break;
+        }
+        $fw_name = basename($_FILES['file']['name']);
+        $fw_name = preg_replace('/[^a-zA-Z0-9_.\-]/', '_', $fw_name);
+        $fw_target = __DIR__ . '/assets/firmware/' . $fw_name;
+        $result = qp_safe_move_upload($_FILES['file']['tmp_name'], $fw_target);
+        if ($result['status']) {
+            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Firmware uploaded: $fw_name");
+            $response = ['status' => true, 'filename' => $fw_name];
+        } else {
+            $response['message'] = $result['message'];
+        }
+        break;
+
+    case 'list_ringtones':
+        $ringtones_dir = __DIR__ . '/assets/ringtones';
+        $files = [];
+        if (is_dir($ringtones_dir)) {
+            foreach (scandir($ringtones_dir) as $item) {
+                if ($item === '.' || $item === '..' || $item === '.htaccess') continue;
+                $filepath = $ringtones_dir . '/' . $item;
+                if (is_file($filepath)) {
+                    $files[] = ['filename' => $item, 'size' => filesize($filepath)];
+                }
+            }
+        }
+        $response = ['status' => true, 'files' => $files];
+        break;
+
+    case 'list_firmware':
+        $firmware_dir = __DIR__ . '/assets/firmware';
+        $files = [];
+        if (is_dir($firmware_dir)) {
+            foreach (scandir($firmware_dir) as $item) {
+                if ($item === '.' || $item === '..' || $item === '.htaccess') continue;
+                $filepath = $firmware_dir . '/' . $item;
+                if (is_file($filepath)) {
+                    $files[] = ['filename' => $item, 'size' => filesize($filepath)];
+                }
+            }
+        }
+        $response = ['status' => true, 'files' => $files];
+        break;
+
+    case 'delete_ringtone':
+        $filename = basename($_POST['filename'] ?? '');
+        if (!$filename) { $response['message'] = 'No filename'; break; }
+        $path = __DIR__ . '/assets/ringtones/' . $filename;
+        $result = qp_safe_delete($path);
+        if ($result['status']) {
+            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Ringtone deleted: $filename");
+            $response = ['status' => true];
+        } else {
+            $response['message'] = $result['message'];
+        }
+        break;
+
+    case 'delete_firmware':
+        $filename = basename($_POST['filename'] ?? '');
+        if (!$filename) { $response['message'] = 'No filename'; break; }
+        $path = __DIR__ . '/assets/firmware/' . $filename;
+        $result = qp_safe_delete($path);
+        if ($result['status']) {
+            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Firmware deleted: $filename");
+            $response = ['status' => true];
+        } else {
+            $response['message'] = $result['message'];
+        }
+        break;
+
     case 'get_driver':
         $model = basename($_REQUEST['model'] ?? ''); // Sanitize to prevent path traversal
         if (!$model) { $response['message'] = 'No model'; break; }
-        $path = $templates_dir . '/' . $model . '.json';
-        if (!file_exists($path)) { $response['message'] = 'Template not found'; break; }
-        $json = file_get_contents($path);
-        $response = ['status' => true, 'json' => $json];
+        $template_file = qp_resolve_template_file($model, $templates_dir);
+        if (!$template_file) { $response['message'] = 'Template not found'; break; }
+        $source = file_get_contents($template_file);
+        if ($source === false) { $response['message'] = 'Failed to read template'; break; }
+        $meta = qp_parse_template_meta($source);
+        $response = ['status' => true, 'source' => $source, 'meta' => $meta];
         break;
 
     case 'import_driver':
-        $json = $_POST['json'] ?? '';
-        $data = json_decode($json, true);
-        if ($data === null || json_last_error() !== JSON_ERROR_NONE || empty($data['model'])) {
-            $response['message'] = 'Invalid JSON or missing model field';
+        // Support file upload
+        if (isset($_FILES['template_file']) && $_FILES['template_file']['error'] === UPLOAD_ERR_OK) {
+            $template_content = file_get_contents($_FILES['template_file']['tmp_name']);
+            if ($template_content === false) {
+                $response['message'] = 'Failed to read uploaded file';
+                break;
+            }
+        } else {
+            $template_content = $_POST['template'] ?? '';
+        }
+        if (empty($template_content)) {
+            $response['message'] = 'No template content provided';
             break;
         }
-        $model = basename($data['model']); // Sanitize to prevent path traversal
-        $path = $templates_dir . '/' . $model . '.json';
-        $result = qp_safe_write($path, $json);
+        $meta = qp_parse_template_meta($template_content);
+        if ($meta === null) {
+            $response['message'] = 'Invalid template: missing or malformed META block';
+            break;
+        }
+        // Determine filename from POST field or META display_name
+        $filename = $_POST['filename'] ?? '';
+        if (empty($filename)) {
+            $display = $meta['display_name'] ?? '';
+            if (empty($display)) {
+                $response['message'] = 'No filename provided and META display_name is empty';
+                break;
+            }
+            // Sanitize display_name into a safe filename
+            $filename = preg_replace('/[^a-zA-Z0-9_\-.]/', '_', $display);
+            $filename = strtolower($filename);
+        }
+        $filename = basename($filename); // Sanitize to prevent path traversal
+        // Ensure .mustache extension (case-insensitive check)
+        if (strcasecmp(substr($filename, -9), '.mustache') !== 0) {
+            $filename .= '.mustache';
+        }
+        $path = $templates_dir . '/' . $filename;
+        $result = qp_safe_write($path, $template_content);
         if ($result['status']) {
-            $response = ['status' => true];
+            $response = ['status' => true, 'filename' => $filename];
         } else {
             $response['message'] = $result['message'];
         }
@@ -567,8 +648,15 @@ switch ($action) {
     case 'delete_driver':
         $model = basename($_POST['model'] ?? ''); // Sanitize to prevent path traversal
         if (!$model) { $response['message'] = 'No model'; break; }
-        $path = $templates_dir . '/' . $model . '.json';
-        $result = qp_safe_delete($path);
+        // Try resolving via qp_resolve_template_file first
+        $template_file = qp_resolve_template_file($model, $templates_dir);
+        if ($template_file) {
+            $result = qp_safe_delete($template_file);
+        } else {
+            // Fallback: try direct .mustache filename
+            $path = $templates_dir . '/' . $model . '.mustache';
+            $result = qp_safe_delete($path);
+        }
         if ($result['status']) {
             $response = ['status' => true];
         } else {
@@ -577,12 +665,19 @@ switch ($action) {
         break;
 
     case 'list_drivers':
-        $files = glob($templates_dir . '/*.json');
+        $files = glob($templates_dir . '/*.mustache');
+        if ($files === false) { $files = []; }
         $list = [];
         foreach ($files as $file) {
-            $model = basename($file, '.json');
-            $data = json_decode(file_get_contents($file), true);
-            $list[] = ['model' => $model, 'display_name' => $data['display_name'] ?? $model];
+            $model = basename($file, '.mustache');
+            $source = file_get_contents($file);
+            $meta = ($source !== false) ? qp_parse_template_meta($source) : null;
+            $list[] = [
+                'model'            => $model,
+                'display_name'     => ($meta['display_name'] ?? '') ?: $model,
+                'manufacturer'     => $meta['manufacturer'] ?? '',
+                'supported_models' => $meta['supported_models'] ?? [],
+            ];
         }
         $response = ['status' => true, 'list' => $list];
         break;
