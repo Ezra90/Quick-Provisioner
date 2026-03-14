@@ -68,15 +68,10 @@ jobs:
 
       - name: Update template versions
         run: |
-          if [ "${{ steps.direction.outputs.dir }}" = "push" ]; then
-            TARGET_DIR="freepbx-quickprovisioner"
-            TEMPLATE_DIR="freepbx-quickprovisioner/templates"
-          else
-            TARGET_DIR="freepbx-quickprovisioner"
-            TEMPLATE_DIR="freepbx-quickprovisioner/templates"
-          fi
-
-          VERSION_FILE="$TARGET_DIR/templates/template-versions.json"
+          # Version tracker always lives in freepbx-quickprovisioner
+          # Templates dir has the latest files regardless of sync direction
+          TEMPLATE_DIR="freepbx-quickprovisioner/templates"
+          VERSION_FILE="freepbx-quickprovisioner/templates/template-versions.json"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           echo '{' > "$VERSION_FILE"
