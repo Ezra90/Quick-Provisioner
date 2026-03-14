@@ -32,6 +32,22 @@ jobs:
       contents: write
 
     steps:
+      - name: Validate sync token
+        run: |
+          TOKEN="${{ secrets.TEMPLATE_SYNC_TOKEN }}"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::TEMPLATE_SYNC_TOKEN secret is not configured."
+            echo "::error::Create a Personal Access Token (classic) with 'repo' scope at https://github.com/settings/tokens"
+            echo "::error::Then add it as a repository secret named TEMPLATE_SYNC_TOKEN in both repos."
+            exit 1
+          fi
+          if [[ "$TOKEN" != ghp_* ]] && [[ "$TOKEN" != github_pat_* ]]; then
+            echo "::error::TEMPLATE_SYNC_TOKEN does not look like a valid GitHub Personal Access Token."
+            echo "::error::Classic tokens start with 'ghp_' and fine-grained tokens start with 'github_pat_'."
+            echo "::error::Generate a new token at https://github.com/settings/tokens with 'repo' scope and update the secret."
+            exit 1
+          fi
+
       - name: Detect repo and configure paths
         id: config
         run: |
