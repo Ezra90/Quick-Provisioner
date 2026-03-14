@@ -1,0 +1,79 @@
+name: Update Template Versions
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - 'templates/*.mustache'
+  workflow_dispatch:
+
+jobs:
+  update-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get build info
+        id: build_info
+        run: |
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+          COMMIT_SHORT=$(git rev-parse --short HEAD)
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "COMMIT_SHORT=$COMMIT_SHORT" >> $GITHUB_OUTPUT
+
+      - name: Generate template-versions.json
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          VERSION_FILE="templates/template-versions.json"
+
+          echo '{' > "$VERSION_FILE"
+          echo '  "schema_version": "1.0",' >> "$VERSION_FILE"
+          echo "  \"generated\": \"$TIMESTAMP\"," >> "$VERSION_FILE"
+          echo "  \"build_number\": ${{ steps.build_info.outputs.BUILD_NUMBER }}," >> "$VERSION_FILE"
+          echo "  \"commit\": \"${{ steps.build_info.outputs.COMMIT_SHORT }}\"," >> "$VERSION_FILE"
+          echo '  "templates": {' >> "$VERSION_FILE"
+
+          FIRST=true
+          for f in templates/*.mustache; do
+            [ -f "$f" ] || continue
+            NAME=$(basename "$f")
+            HASH=$(sha256sum "$f" | awk '{print $1}')
+            LAST_MODIFIED=$(git log -1 --format="%aI" -- "$f" 2>/dev/null || echo "$TIMESTAMP")
+            LAST_AUTHOR=$(git log -1 --format="%an" -- "$f" 2>/dev/null || echo "unknown")
+
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              echo ',' >> "$VERSION_FILE"
+            fi
+            printf '    "%s": {\n' "$NAME" >> "$VERSION_FILE"
+            printf '      "sha256": "%s",\n' "$HASH" >> "$VERSION_FILE"
+            printf '      "last_modified": "%s",\n' "$LAST_MODIFIED" >> "$VERSION_FILE"
+            printf '      "last_author": "%s"\n' "$LAST_AUTHOR" >> "$VERSION_FILE"
+            printf '    }' >> "$VERSION_FILE"
+          done
+
+          echo '' >> "$VERSION_FILE"
+          echo '  }' >> "$VERSION_FILE"
+          echo '}' >> "$VERSION_FILE"
+
+          echo "Generated template-versions.json:"
+          cat "$VERSION_FILE"
+
+      - name: Commit version tracker
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add templates/template-versions.json
+          if git diff --cached --quiet; then
+            echo "No version changes detected"
+          else
+            git commit -m "chore: update template version tracker [skip ci]"
+            git push
+          fi

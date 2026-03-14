@@ -1,0 +1,144 @@
+name: Sync Shared Templates
+
+on:
+  # Run when templates change on main
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - 'templates/**'
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      direction:
+        description: 'Sync direction'
+        required: true
+        default: 'push'
+        type: choice
+        options:
+          - push
+          - pull
+  # Allow other repos to trigger via repository_dispatch
+  repository_dispatch:
+    types: [ template-sync ]
+  # Scheduled sync: pull from Pocket-Provisioner weekly
+  schedule:
+    - cron: '0 3 * * 1'   # Every Monday at 03:00 UTC
+
+jobs:
+  sync-templates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout freepbx-quickprovisioner
+        uses: actions/checkout@v4
+        with:
+          path: freepbx-quickprovisioner
+
+      - name: Checkout Pocket-Provisioner
+        uses: actions/checkout@v4
+        with:
+          repository: Ezra90/Pocket-Provisioner
+          path: pocket-provisioner
+          token: ${{ secrets.TEMPLATE_SYNC_TOKEN }}
+
+      - name: Determine sync direction
+        id: direction
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dir=${{ github.event.inputs.direction }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "dir=pull" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=push" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync templates
+        run: |
+          DIRECTION="${{ steps.direction.outputs.dir }}"
+
+          if [ "$DIRECTION" = "push" ]; then
+            echo "Pushing templates from freepbx-quickprovisioner → Pocket-Provisioner"
+            cp freepbx-quickprovisioner/templates/*.mustache pocket-provisioner/assets/templates/
+          else
+            echo "Pulling templates from Pocket-Provisioner → freepbx-quickprovisioner"
+            cp pocket-provisioner/assets/templates/*.mustache freepbx-quickprovisioner/templates/
+          fi
+
+      - name: Update template versions
+        run: |
+          if [ "${{ steps.direction.outputs.dir }}" = "push" ]; then
+            TARGET_DIR="freepbx-quickprovisioner"
+            TEMPLATE_DIR="freepbx-quickprovisioner/templates"
+          else
+            TARGET_DIR="freepbx-quickprovisioner"
+            TEMPLATE_DIR="freepbx-quickprovisioner/templates"
+          fi
+
+          VERSION_FILE="$TARGET_DIR/templates/template-versions.json"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          echo '{' > "$VERSION_FILE"
+          echo '  "schema_version": "1.0",' >> "$VERSION_FILE"
+          echo "  \"last_sync\": \"$TIMESTAMP\"," >> "$VERSION_FILE"
+          echo "  \"sync_direction\": \"${{ steps.direction.outputs.dir }}\"," >> "$VERSION_FILE"
+          echo '  "templates": {' >> "$VERSION_FILE"
+
+          FIRST=true
+          for f in "$TEMPLATE_DIR"/*.mustache; do
+            [ -f "$f" ] || continue
+            NAME=$(basename "$f")
+            HASH=$(sha256sum "$f" | awk '{print $1}')
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              echo ',' >> "$VERSION_FILE"
+            fi
+            printf '    "%s": {"sha256": "%s", "updated": "%s"}' "$NAME" "$HASH" "$TIMESTAMP" >> "$VERSION_FILE"
+          done
+
+          echo '' >> "$VERSION_FILE"
+          echo '  }' >> "$VERSION_FILE"
+          echo '}' >> "$VERSION_FILE"
+
+      - name: Push to Pocket-Provisioner
+        if: ${{ steps.direction.outputs.dir != 'pull' }}
+        working-directory: pocket-provisioner
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/templates/
+          if git diff --cached --quiet; then
+            echo "No template changes to sync"
+          else
+            git commit -m "sync: update shared templates from freepbx-quickprovisioner"
+            git push
+          fi
+
+      - name: Push to freepbx-quickprovisioner
+        if: ${{ steps.direction.outputs.dir == 'pull' }}
+        working-directory: freepbx-quickprovisioner
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add templates/
+          if git diff --cached --quiet; then
+            echo "No template changes to sync"
+          else
+            git commit -m "sync: update shared templates from Pocket-Provisioner"
+            git push
+          fi
+
+      - name: Commit version tracker update
+        working-directory: freepbx-quickprovisioner
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add templates/template-versions.json
+          if git diff --cached --quiet; then
+            echo "No version tracker changes"
+          else
+            git commit -m "sync: update template version tracker"
+            git push
+          fi
