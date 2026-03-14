@@ -5,14 +5,21 @@ global $db;
 global $amp_conf;
 
 $logger = FreePBX::create()->Logger;
-$logger->log('Starting Quick Provisioner uninstall', 'INFO');
+$logger->log('Starting Quick-Provisioner uninstall', 'INFO');
 
-// --- 1. Drop Database Table ---
+// --- 1. Drop Database Tables ---
 try {
     $db->query("DROP TABLE IF EXISTS `quickprovisioner_devices`");
     $logger->log('Dropped quickprovisioner_devices table', 'INFO');
 } catch(Exception $e) {
     $logger->log('Error dropping quickprovisioner_devices table: ' . $e->getMessage(), 'ERROR');
+}
+
+try {
+    $db->query("DROP TABLE IF EXISTS `quickprovisioner_access_log`");
+    $logger->log('Dropped quickprovisioner_access_log table', 'INFO');
+} catch(Exception $e) {
+    $logger->log('Error dropping quickprovisioner_access_log table: ' . $e->getMessage(), 'ERROR');
 }
 
 // --- 2. Remove asset directories and contents ---
@@ -94,5 +101,5 @@ if (is_dir($assets_dir)) {
     }
 }
 
-$logger->log('Quick Provisioner uninstall completed', 'INFO');
+$logger->log('Quick-Provisioner uninstall completed', 'INFO');
 ?>

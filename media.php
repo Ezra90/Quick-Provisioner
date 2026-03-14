@@ -1,5 +1,5 @@
 <?php
-// media.php - Quick Provisioner - Secure Resizer
+// media.php - Quick-Provisioner - Secure Resizer
 include '/etc/freepbx.conf';
 
 function qp_is_local_network() {

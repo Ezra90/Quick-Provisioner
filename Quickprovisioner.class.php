@@ -6,6 +6,7 @@ define('QP_FREEPBX_BASE_PATH', '/var/www/html');
 define('QP_GIT_COMMAND', '/usr/bin/git');
 define('QP_FWCONSOLE_RELOAD', '/usr/sbin/fwconsole reload');
 define('QP_FWCONSOLE_RESTART', '/usr/sbin/fwconsole restart');
+define('QP_FWCONSOLE_CHOWN', '/usr/sbin/fwconsole chown');
 
 class Quickprovisioner extends \FreePBX_Helpers implements \BMO {
     public function install() {}
@@ -13,22 +14,21 @@ class Quickprovisioner extends \FreePBX_Helpers implements \BMO {
     public function backup() {}
     public function restore($backup) {}
     public function doConfigPageInit($page) {}
-    
+
     public function ajaxRequest($req, &$setting) {
         return true;
     }
-    
+
     public function ajaxHandler() {
         $command = isset($_REQUEST['command']) ? $_REQUEST['command'] : '';
         $action = isset($_REQUEST['action']) ? $_REQUEST['action'] : $command;
-        
+
         switch($action) {
             case 'restart_pbx':
                 $type = isset($_POST['type']) ? $_POST['type'] : 'reload';
-                if (! in_array($type, array('reload', 'restart'), true)) {
+                if (!in_array($type, array('reload', 'restart'), true)) {
                     return array('status' => false, 'message' => 'Invalid restart type');
                 }
-                // Use explicit command mapping with constants for security
                 $allowed_commands = array(
                     'reload' => QP_FWCONSOLE_RELOAD,
                     'restart' => QP_FWCONSOLE_RESTART
@@ -43,20 +43,7 @@ class Quickprovisioner extends \FreePBX_Helpers implements \BMO {
                     return array('status' => false, 'message' => 'PBX ' . $type . ' failed', 'output' => implode("\n", $output));
                 }
                 break;
-                
-            case 'check_updates':
-                $module_dir = dirname(__FILE__);
-                // Validate module_dir is within expected path for security
-                $real_module_dir = realpath($module_dir);
-                if ($real_module_dir === false || strpos($real_module_dir, QP_FREEPBX_BASE_PATH) !== 0) {
-                    return array('status' => false, 'current_commit' => '', 'message' => 'Invalid module directory');
-                }
-                // Use explicit git commands with full path for security
-                $git_cmd = QP_GIT_COMMAND . ' -C ' . escapeshellarg($real_module_dir);
-                $current_commit = trim(shell_exec($git_cmd . ' rev-parse HEAD 2>&1'));
-                return array('status' => true, 'current_commit' => $current_commit);
-                break;
-                
+
             default:
                 global $db;
                 $db = \FreePBX::Database();
