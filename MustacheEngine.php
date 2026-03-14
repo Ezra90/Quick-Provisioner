@@ -78,6 +78,7 @@ function _qp_mustache_render_section($template, $context) {
     // 2. Process sections (truthy and inverted) from outermost inward.
     //    We loop until no more section tags remain so that nested sections
     //    produced by earlier passes are also resolved.
+    // Cap recursive section passes to prevent runaway loops on malformed templates
     $maxPasses = 64;
     for ($pass = 0; $pass < $maxPasses; $pass++) {
         $changed = false;
@@ -230,6 +231,7 @@ function qp_resolve_template_file($model, $templates_dir) {
     // Also try with mixed extensions (e.g. model.cfg.mustache patterns from directory)
     $glob = glob($templates_dir . '/*.mustache');
     if ($glob === false) {
+        error_log("Quick Provisioner: Failed to scan templates directory: $templates_dir");
         $glob = [];
     }
 
@@ -326,7 +328,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $displayName = $server_info['display_name'] ?? $extension;
     $secret     = $server_info['secret'] ?? '';
 
-    // Transport code for Yealink: UDP=0 TCP=1 TLS=2 DNS-SRV=3
+    // Transport code mapping (Yealink-specific; other vendors use the transport string directly)
     $transportCodes = ['UDP' => 0, 'TCP' => 1, 'TLS' => 2, 'DNS-SRV' => 3];
     $transportCode  = $transportCodes[strtoupper($transport)] ?? 0;
 
