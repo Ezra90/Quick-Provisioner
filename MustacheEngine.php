@@ -39,6 +39,7 @@ function qp_parse_template_meta($source) {
         'type_mapping'     => $meta['type_mapping'] ?? [],
         'categories'       => $meta['categories'] ?? [],
         'variables'        => $meta['variables'] ?? [],
+        'visual_editor'    => $meta['visual_editor'] ?? null,
     ];
 }
 

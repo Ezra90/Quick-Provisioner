@@ -69,11 +69,11 @@ $csrf_token = $_SESSION['qp_csrf'];
 
         <div id="tab-edit" class="tab-pane fade">
             <form id="deviceForm">
-                <input type="hidden" id="deviceId">
+                <input type="hidden" id="deviceId" name="deviceId">
                 <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
                 <input type="hidden" id="extension" name="extension">
-                <input type="hidden" id="wallpaper">
-                <input type="hidden" id="wallpaper_mode" value="crop">
+                <input type="hidden" id="wallpaper" name="wallpaper">
+                <input type="hidden" id="wallpaper_mode" name="wallpaper_mode" value="crop">
                 
                 <div class="row">
                     <!-- LEFT COLUMN: Core Device Settings (Always Visible) -->
@@ -151,7 +151,7 @@ $csrf_token = $_SESSION['qp_csrf'];
                                 <!-- Model -->
                                 <div class="form-group">
                                     <label>Model</label>
-                                    <select id="model" class="form-control" onchange="loadProfile(); updateRightColumnHeader(); updateHandsetSettingsPreview();">
+                                    <select id="model" name="model" class="form-control" onchange="loadProfile(); updateRightColumnHeader(); updateHandsetSettingsPreview();">
                                         <!-- Populated by loadTemplates() -->
                                     </select>
                                 </div>
@@ -162,7 +162,7 @@ $csrf_token = $_SESSION['qp_csrf'];
                                 <!-- MAC Address -->
                                 <div class="form-group">
                                     <label>MAC Address</label>
-                                    <input type="text" id="mac" class="form-control" required>
+                                    <input type="text" id="mac" name="mac" class="form-control" required>
                                 </div>
 
                                 <hr>
@@ -171,13 +171,13 @@ $csrf_token = $_SESSION['qp_csrf'];
                                 <h4>Remote Provisioning Authentication</h4>
                                 <div class="form-group">
                                     <label>Provisioning Username</label>
-                                    <input type="text" id="prov_username" class="form-control" placeholder="Required for remote provisioning">
+                                    <input type="text" id="prov_username" name="prov_username" class="form-control" placeholder="Required for remote provisioning">
                                     <small class="text-muted">Remote provisioning requires per-device credentials. Devices must send HTTP Basic Auth when retrieving configs or media.</small>
                                 </div>
                                 <div class="form-group">
                                     <label>Provisioning Password</label>
                                     <div class="input-group">
-                                        <input type="text" id="prov_password" class="form-control" placeholder="Required for remote provisioning">
+                                        <input type="text" id="prov_password" name="prov_password" class="form-control" placeholder="Required for remote provisioning">
                                         <span class="input-group-btn">
                                             <button type="button" class="btn btn-default" onclick="generateProvPassword()">Generate</button>
                                         </span>
@@ -828,6 +828,17 @@ function loadProfile() {
             try {
                 profiles[model] = r.meta;
                 templateSources[model] = r.source || '';
+                // Use visual_editor from template META if present, otherwise auto-generate
+                if (!profiles[model].visual_editor) {
+                    profiles[model].visual_editor = generateVisualEditor(model, profiles[model]);
+                } else if (!profiles[model].visual_editor.total_pages) {
+                    // Calculate total_pages from keys data if not set
+                    var maxPage = 1;
+                    (profiles[model].visual_editor.keys || []).forEach(function(k) {
+                        if (k.page && k.page > maxPage) maxPage = k.page;
+                    });
+                    profiles[model].visual_editor.total_pages = maxPage;
+                }
                 console.log('Template loaded successfully:', profiles[model]);
                 showModelNotes();
                 loadDeviceOptions();
@@ -970,9 +981,10 @@ function updatePageSelect() {
         // Show page selector, hide More/Hide toggle
         $('#pageSelectorGroup').show();
         $('#toggleExpandGroup').hide();
-        // Build page selector
-        var perPage = 10; // Default; can pull from template if added
-        var maxPages = Math.ceil(profile.max_line_keys / perPage);
+        // Build page selector from visual editor keys_per_page or default 10
+        var perPage = (profile.visual_editor && profile.visual_editor.keys_per_page) || 10;
+        var maxKeys = profile.max_line_keys || 29;
+        var maxPages = Math.ceil(maxKeys / perPage);
         $('#pageSelect').html('');
         for (var i = 1; i <= maxPages; i++) {
             $('#pageSelect').append('<option value="' + i + '">Page ' + i + '</option>');
@@ -980,6 +992,211 @@ function updatePageSelect() {
     }
 }
 
+// ========================================
+// VISUAL EDITOR AUTO-GENERATION
+// Generates visual_editor layout data for known phone models
+// ========================================
+function generateVisualEditor(model, profile) {
+    var maxKeys = profile.max_line_keys || 29;
+    var keysPerPage = 10; // 5 left + 5 right (standard desk phone layout)
+    var totalPages = Math.ceil(maxKeys / keysPerPage);
+
+    // Phone chassis dimensions
+    var chassis = {
+        chassis_width: 340,
+        chassis_height: 540,
+        screen_x: 65,
+        screen_y: 58,
+        screen_width: 210,
+        screen_height: 150
+    };
+
+    // Key positions: 5 on left side, 5 on right side of screen
+    var leftX = 12;
+    var rightX = 286;
+    var keyWidth = 44;
+    var keyHeight = 24;
+    var keyStartY = 66;
+    var keySpacingY = 28;
+
+    var keys = [];
+    var keyIndex = 1;
+    for (var page = 1; page <= totalPages; page++) {
+        // Left side keys (5 per page)
+        for (var i = 0; i < 5 && keyIndex <= maxKeys; i++) {
+            keys.push({
+                index: keyIndex,
+                x: leftX,
+                y: keyStartY + (i * keySpacingY),
+                width: keyWidth,
+                height: keyHeight,
+                page: page,
+                label_align: 'center',
+                side: 'left'
+            });
+            keyIndex++;
+        }
+        // Right side keys (5 per page)
+        for (var i = 0; i < 5 && keyIndex <= maxKeys; i++) {
+            keys.push({
+                index: keyIndex,
+                x: rightX,
+                y: keyStartY + (i * keySpacingY),
+                width: keyWidth,
+                height: keyHeight,
+                page: page,
+                label_align: 'center',
+                side: 'right'
+            });
+            keyIndex++;
+        }
+    }
+
+    return {
+        svg_fallback: true,
+        expandable_layout: false,
+        schematic: chassis,
+        keys_per_page: keysPerPage,
+        total_pages: totalPages,
+        keys: keys
+    };
+}
+
+// ========================================
+// SVG PHONE DRAWING
+// Generates a realistic desk phone SVG
+// ========================================
+function generatePhoneSVG(sch, displayName, page, totalPages) {
+    var w = sch.chassis_width;
+    var h = sch.chassis_height;
+    var sx = sch.screen_x;
+    var sy = sch.screen_y;
+    var sw = sch.screen_width;
+    var sh = sch.screen_height;
+
+    // Navigation cluster position (below screen)
+    var navCenterX = w / 2;
+    var navCenterY = sy + sh + 70;
+    var navRadius = 40;
+
+    // Speaker grille position
+    var grilleY = 22;
+    var grilleX = w / 2 - 60;
+    var grilleW = 120;
+
+    var svg = '<svg width="' + w + '" height="' + h + '" xmlns="http://www.w3.org/2000/svg">';
+
+    // Definitions (gradients, filters)
+    svg += '<defs>';
+    svg += '<linearGradient id="chassis-bg" x1="0%" y1="0%" x2="0%" y2="100%">';
+    svg += '<stop offset="0%" style="stop-color:#555;stop-opacity:1" />';
+    svg += '<stop offset="50%" style="stop-color:#3a3a3a;stop-opacity:1" />';
+    svg += '<stop offset="100%" style="stop-color:#2a2a2a;stop-opacity:1" />';
+    svg += '</linearGradient>';
+    svg += '<linearGradient id="screen-bg" x1="0%" y1="0%" x2="0%" y2="100%">';
+    svg += '<stop offset="0%" style="stop-color:#1a2a3a;stop-opacity:1" />';
+    svg += '<stop offset="100%" style="stop-color:#0a1520;stop-opacity:1" />';
+    svg += '</linearGradient>';
+    svg += '<linearGradient id="nav-bg" x1="0%" y1="0%" x2="0%" y2="100%">';
+    svg += '<stop offset="0%" style="stop-color:#4a4a4a;stop-opacity:1" />';
+    svg += '<stop offset="100%" style="stop-color:#333;stop-opacity:1" />';
+    svg += '</linearGradient>';
+    svg += '<filter id="shadow"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-opacity="0.3"/></filter>';
+    svg += '</defs>';
+
+    // Phone body
+    svg += '<rect width="' + w + '" height="' + h + '" fill="url(#chassis-bg)" rx="18" ry="18"/>';
+    svg += '<rect x="1" y="1" width="' + (w - 2) + '" height="' + (h - 2) + '" fill="none" stroke="#666" stroke-width="1" rx="17" ry="17"/>';
+
+    // Speaker grille
+    for (var gi = 0; gi < 5; gi++) {
+        var gy = grilleY + gi * 4;
+        svg += '<line x1="' + grilleX + '" y1="' + gy + '" x2="' + (grilleX + grilleW) + '" y2="' + gy + '" stroke="#222" stroke-width="1.5" stroke-linecap="round"/>';
+    }
+
+    // Status LED
+    svg += '<circle cx="' + (grilleX + grilleW + 15) + '" cy="' + (grilleY + 8) + '" r="3" fill="#2ecc40" opacity="0.8"/>';
+
+    // Screen bezel (dark border around screen)
+    svg += '<rect x="' + (sx - 4) + '" y="' + (sy - 4) + '" width="' + (sw + 8) + '" height="' + (sh + 8) + '" fill="#111" rx="4" ry="4"/>';
+
+    // Screen area
+    svg += '<rect x="' + sx + '" y="' + sy + '" width="' + sw + '" height="' + sh + '" fill="url(#screen-bg)" rx="2" ry="2"/>';
+
+    // Screen frame highlight
+    svg += '<rect x="' + (sx + 1) + '" y="' + (sy + 1) + '" width="' + (sw - 2) + '" height="' + (sh - 2) + '" fill="none" stroke="#2a3a4a" stroke-width="0.5" rx="2" ry="2"/>';
+
+    // Line key slot recesses (left side, 5 slots)
+    for (var ki = 0; ki < 5; ki++) {
+        var ky = 66 + ki * 28;
+        // Left key recess
+        svg += '<rect x="10" y="' + ky + '" width="48" height="24" fill="#2a2a2a" stroke="#444" stroke-width="0.5" rx="3" ry="3"/>';
+        // Right key recess
+        svg += '<rect x="' + (w - 58) + '" y="' + ky + '" width="48" height="24" fill="#2a2a2a" stroke="#444" stroke-width="0.5" rx="3" ry="3"/>';
+    }
+
+    // Page indicator on screen (bottom of screen area)
+    if (totalPages > 1) {
+        var pageText = 'Page ' + page + '/' + totalPages;
+        svg += '<text x="' + (sx + sw / 2) + '" y="' + (sy + sh - 8) + '" fill="#6a9ab5" font-size="11" text-anchor="middle" font-family="Arial,sans-serif">' + pageText + '</text>';
+        // Small dots for page indicators
+        var dotStartX = sx + sw / 2 - (totalPages * 8) / 2;
+        for (var di = 0; di < totalPages; di++) {
+            var dotColor = (di + 1 === page) ? '#6a9ab5' : '#333';
+            svg += '<circle cx="' + (dotStartX + di * 8 + 4) + '" cy="' + (sy + sh - 18) + '" r="2.5" fill="' + dotColor + '"/>';
+        }
+    }
+
+    // Model label on screen
+    svg += '<text x="' + (sx + sw / 2) + '" y="' + (sy + 18) + '" fill="#4a6a7a" font-size="12" text-anchor="middle" font-family="Arial,sans-serif">' + (displayName || 'Phone') + '</text>';
+
+    // Navigation cluster
+    // Outer ring
+    svg += '<circle cx="' + navCenterX + '" cy="' + navCenterY + '" r="' + navRadius + '" fill="url(#nav-bg)" stroke="#555" stroke-width="1.5"/>';
+    // OK button (center)
+    svg += '<circle cx="' + navCenterX + '" cy="' + navCenterY + '" r="15" fill="#444" stroke="#666" stroke-width="1"/>';
+    svg += '<text x="' + navCenterX + '" y="' + (navCenterY + 4) + '" fill="#aaa" font-size="10" font-weight="bold" text-anchor="middle" font-family="Arial,sans-serif">OK</text>';
+    // Arrow indicators (triangles)
+    // Up
+    svg += '<polygon points="' + navCenterX + ',' + (navCenterY - navRadius + 8) + ' ' + (navCenterX - 5) + ',' + (navCenterY - navRadius + 16) + ' ' + (navCenterX + 5) + ',' + (navCenterY - navRadius + 16) + '" fill="#888"/>';
+    // Down
+    svg += '<polygon points="' + navCenterX + ',' + (navCenterY + navRadius - 8) + ' ' + (navCenterX - 5) + ',' + (navCenterY + navRadius - 16) + ' ' + (navCenterX + 5) + ',' + (navCenterY + navRadius - 16) + '" fill="#888"/>';
+    // Left
+    svg += '<polygon points="' + (navCenterX - navRadius + 8) + ',' + navCenterY + ' ' + (navCenterX - navRadius + 16) + ',' + (navCenterY - 5) + ' ' + (navCenterX - navRadius + 16) + ',' + (navCenterY + 5) + '" fill="#888"/>';
+    // Right
+    svg += '<polygon points="' + (navCenterX + navRadius - 8) + ',' + navCenterY + ' ' + (navCenterX + navRadius - 16) + ',' + (navCenterY - 5) + ' ' + (navCenterX + navRadius - 16) + ',' + (navCenterY + 5) + '" fill="#888"/>';
+
+    // Function buttons row (below nav cluster)
+    var btnY = navCenterY + navRadius + 20;
+    var btnLabels = ['📞', '📖', '✉', '🔇'];
+    var btnStartX = navCenterX - (btnLabels.length * 24);
+    for (var bi = 0; bi < btnLabels.length; bi++) {
+        var bx = btnStartX + bi * 48;
+        svg += '<rect x="' + bx + '" y="' + btnY + '" width="36" height="18" fill="#333" stroke="#555" stroke-width="0.5" rx="3" ry="3"/>';
+        svg += '<text x="' + (bx + 18) + '" y="' + (btnY + 13) + '" fill="#999" font-size="10" text-anchor="middle" font-family="Arial,sans-serif">' + btnLabels[bi] + '</text>';
+    }
+
+    // Keypad dots (decorative, suggests the number pad area)
+    var kpStartY = btnY + 35;
+    var kpStartX = navCenterX - 36;
+    for (var row = 0; row < 4; row++) {
+        for (var col = 0; col < 3; col++) {
+            svg += '<circle cx="' + (kpStartX + col * 24 + 12) + '" cy="' + (kpStartY + row * 20 + 4) + '" r="2" fill="#444"/>';
+        }
+    }
+
+    // Brand label at bottom
+    svg += '<text x="' + (w / 2) + '" y="' + (h - 14) + '" fill="#555" font-size="11" font-weight="bold" text-anchor="middle" font-family="Arial,sans-serif" letter-spacing="2">';
+    svg += (displayName || 'VOIP PHONE').toUpperCase();
+    svg += '</text>';
+
+    svg += '</svg>';
+    return svg;
+}
+
+// ========================================
+// RENDER PREVIEW - Main visual preview renderer
+// ========================================
 function renderPreview() {
     var model = $('#model').val();
     var profile = profiles[model];
@@ -988,50 +1205,30 @@ function renderPreview() {
     var page = parseInt($('#pageSelect').val()) || 1;
     var wallpaper = $('#wallpaper').val();
     var mode = $('#wallpaper_mode').val();
+    var totalPages = ve.total_pages || Math.ceil((profile.max_line_keys || 29) / (ve.keys_per_page || 10));
 
     var container = $('#previewContainer');
-    container.empty().css({width: ve.schematic.chassis_width + 'px', height: ve.schematic.chassis_height + 'px'});
+    container.empty().css({
+        width: ve.schematic.chassis_width + 'px',
+        height: ve.schematic.chassis_height + 'px',
+        position: 'relative'
+    });
 
+    // Generate and set the phone SVG as background
     if (ve.background_image_url) {
         container.css('backgroundImage', 'url(' + ve.background_image_url + ')');
-    } else if (ve.svg_fallback) {
-        var sch = ve.schematic;
-        // Enhanced SVG scaffold with better visual representation
-        var svg = `<svg width="${sch.chassis_width}" height="${sch.chassis_height}" xmlns="http://www.w3.org/2000/svg">
-            <!-- Phone chassis with gradient -->
-            <defs>
-                <linearGradient id="chassis-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:#4a4a4a;stop-opacity:1" />
-                    <stop offset="100%" style="stop-color:#2a2a2a;stop-opacity:1" />
-                </linearGradient>
-                <linearGradient id="screen-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:#1a1a1a;stop-opacity:1" />
-                    <stop offset="100%" style="stop-color:#0a0a0a;stop-opacity:1" />
-                </linearGradient>
-            </defs>
-            <!-- Chassis background -->
-            <rect width="100%" height="100%" fill="url(#chassis-gradient)" rx="30" ry="30"/>
-            <!-- Screen area with border -->
-            <rect x="${sch.screen_x}" y="${sch.screen_y}" width="${sch.screen_width}" height="${sch.screen_height}" 
-                  fill="url(#screen-gradient)" stroke="#555" stroke-width="2" rx="5" ry="5"/>
-            <!-- Screen frame highlight -->
-            <rect x="${sch.screen_x + 2}" y="${sch.screen_y + 2}" width="${sch.screen_width - 4}" height="${sch.screen_height - 4}" 
-                  fill="none" stroke="#666" stroke-width="1" rx="4" ry="4"/>
-            <!-- Model label -->
-            <text x="50%" y="30" fill="#999" font-size="18" font-weight="bold" text-anchor="middle" font-family="Arial, sans-serif">
-                ${profile.display_name || model}
-            </text>
-            <!-- SVG Fallback indicator -->
-            <text x="50%" y="${sch.screen_y + sch.screen_height/2}" fill="#444" font-size="16" text-anchor="middle" 
-                  dominant-baseline="middle" font-family="Arial, sans-serif">
-                SVG Preview Mode
-            </text>
-        </svg>`;
-        container.css('backgroundImage', 'url(data:image/svg+xml;base64,' + btoa(svg) + ')');
+    } else {
+        var displayName = profile.display_name || model;
+        var svg = generatePhoneSVG(ve.schematic, displayName, page, totalPages);
+        container.css({
+            backgroundImage: 'url(data:image/svg+xml;base64,' + btoa(svg) + ')',
+            backgroundSize: 'contain',
+            backgroundRepeat: 'no-repeat'
+        });
     }
 
+    // Wallpaper overlay on screen area
     if (wallpaper) {
-        // Construct proper image URL
         var wallpaperUrl = wallpaper;
         if (!wallpaper.startsWith('http://') && !wallpaper.startsWith('https://')) {
             wallpaperUrl = 'media.php?file=' + encodeURIComponent(wallpaper) + '&preview=1';
@@ -1045,59 +1242,131 @@ function renderPreview() {
             backgroundImage: 'url(' + wallpaperUrl + ')',
             backgroundSize: mode === 'crop' ? 'cover' : 'contain',
             backgroundRepeat: 'no-repeat',
-            backgroundPosition: 'center'
+            backgroundPosition: 'center',
+            borderRadius: '2px'
         });
         container.append(screenDiv);
     }
 
-    var keysLayer = $('<div id="keysLayer">').css({position: 'absolute', top: 0, left: 0});
+    // Keys layer
+    var keysLayer = $('<div id="keysLayer">').css({position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'});
     container.append(keysLayer);
+
     ve.keys.forEach(function(key) {
-        // Determine if we should show this key
         var showKey = true;
-        
-        // For expandable layouts, check collapsed/expanded state
+
         if (ve.expandable_layout) {
             if (!isExpandedView) {
-                // Collapsed view: only show column 1 (keys 1-6) and column 5 (keys 7-11)
                 showKey = (key.column === 1) || (key.column === 5);
             }
-            // Expanded view: show all keys (showKey remains true)
         } else {
-            // For page-based layouts, show key if no page attribute or page matches selected page
             showKey = (key.page === undefined || key.page === page);
         }
-        
+
         if (showKey) {
-            // Use key width/height from template if defined, otherwise use sensible defaults
-            var btnWidth = key.width || 140;
-            var btnHeight = key.height || 40;
-            
+            var btnWidth = key.width || 44;
+            var btnHeight = key.height || 24;
+            var keyData = currentKeys.find(function(k) { return k.index === key.index; });
+            var hasConfig = keyData && keyData.type;
+            var keyLabel = (keyData && keyData.label) ? keyData.label : 'Key ' + key.index;
+
+            // Color-code buttons based on type
+            var bgColor = 'rgba(80,80,80,0.8)';
+            var borderColor = 'rgba(150,150,150,0.5)';
+            if (hasConfig) {
+                switch (keyData.type) {
+                    case 'line':     bgColor = 'rgba(46,204,64,0.3)'; borderColor = 'rgba(46,204,64,0.6)'; break;
+                    case 'blf':      bgColor = 'rgba(0,116,217,0.3)'; borderColor = 'rgba(0,116,217,0.6)'; break;
+                    case 'speed_dial': bgColor = 'rgba(255,133,27,0.3)'; borderColor = 'rgba(255,133,27,0.6)'; break;
+                    default:         bgColor = 'rgba(177,13,201,0.3)'; borderColor = 'rgba(177,13,201,0.6)'; break;
+                }
+            }
+
             var btn = $('<button>').css({
                 position: 'absolute',
                 left: key.x + 'px',
                 top: key.y + 'px',
                 width: btnWidth + 'px',
                 height: btnHeight + 'px',
-                textAlign: key.label_align || 'left',
-                fontSize: '12px',
-                padding: '5px 10px',
+                textAlign: 'center',
+                fontSize: '9px',
+                padding: '2px 4px',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                borderRadius: '4px',
-                border: '1px solid rgba(255,255,255,0.3)',
-                backgroundColor: 'rgba(255,255,255,0.15)',
-                color: '#fff',
-                cursor: 'pointer'
-            }).text(currentKeys.find(k => k.index === key.index)?.label || 'Key ' + key.index).click(function() {
+                borderRadius: '3px',
+                border: '1px solid ' + borderColor,
+                backgroundColor: bgColor,
+                color: hasConfig ? '#fff' : '#aaa',
+                cursor: 'pointer',
+                fontWeight: hasConfig ? 'bold' : 'normal',
+                lineHeight: (btnHeight - 4) + 'px',
+                transition: 'all 0.15s ease'
+            }).text(keyLabel).click(function() {
                 editKey(key.index);
-            });
+            }).hover(
+                function() { $(this).css({transform: 'scale(1.05)', zIndex: 10}); },
+                function() { $(this).css({transform: 'scale(1)', zIndex: 1}); }
+            );
             keysLayer.append(btn);
         }
     });
-    
-    // Add More/Hide button inside preview for expandable layouts
+
+    // More/Prev page buttons inside the phone drawing (below screen)
+    if (!ve.expandable_layout && totalPages > 1) {
+        var moreBtnY = ve.schematic.screen_y + ve.schematic.screen_height + 10;
+        var moreBtnX = ve.schematic.chassis_width / 2;
+
+        // "< Prev" button
+        if (page > 1) {
+            var prevBtn = $('<button>').css({
+                position: 'absolute',
+                left: (moreBtnX - 85) + 'px',
+                top: moreBtnY + 'px',
+                width: '70px',
+                height: '24px',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                borderRadius: '4px',
+                border: '1px solid rgba(150,150,150,0.4)',
+                backgroundColor: 'rgba(60,60,60,0.9)',
+                color: '#ccc',
+                cursor: 'pointer',
+                zIndex: 1000
+            }).html('&#9664; Prev').click(function() {
+                var prev = Math.max(1, page - 1);
+                $('#pageSelect').val(prev);
+                renderPreview();
+            });
+            container.append(prevBtn);
+        }
+
+        // "More >" button
+        if (page < totalPages) {
+            var moreBtn = $('<button>').css({
+                position: 'absolute',
+                left: (moreBtnX + 15) + 'px',
+                top: moreBtnY + 'px',
+                width: '70px',
+                height: '24px',
+                fontSize: '11px',
+                fontWeight: 'bold',
+                borderRadius: '4px',
+                border: '1px solid rgba(150,150,150,0.4)',
+                backgroundColor: 'rgba(60,60,60,0.9)',
+                color: '#ccc',
+                cursor: 'pointer',
+                zIndex: 1000
+            }).html('More &#9654;').click(function() {
+                var next = Math.min(totalPages, page + 1);
+                $('#pageSelect').val(next);
+                renderPreview();
+            });
+            container.append(moreBtn);
+        }
+    }
+
+    // Expandable layout toggle button inside phone
     if (ve.expandable_layout) {
         var toggleBtn = $('<button>').css({
             position: 'absolute',
