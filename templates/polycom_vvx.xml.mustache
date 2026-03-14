@@ -35,9 +35,10 @@
     {"name": "sip_port",         "category": "sip",           "description": "SIP signalling port.", "example": "5060", "default": "5060"},
     {"name": "reg_expiry",       "category": "sip",           "description": "Registration expiry in seconds.", "example": "3600", "default": "3600"},
     {"name": "outbound_proxy_host","category":"sip",           "description": "Outbound proxy hostname or IP.", "example": "sbc.example.com", "default": ""},
+    {"name": "outbound_proxy_port","category":"sip",           "description": "Outbound proxy SIP port.", "example": "5060", "default": "5060"},
     {"name": "backup_server",    "category": "sip",           "description": "Backup SIP registrar address.", "example": "pbx2.example.com", "default": ""},
     {"name": "voicemail_number", "category": "call_features", "description": "MWI subscribe / voicemail number.", "example": "*97", "default": ""},
-    {"name": "wallpaper_url",    "category": "display",       "description": "Background image URL or filename.", "example": "http://192.168.1.1/media/logo.jpg", "default": ""},
+    {"name": "wallpaper_url",    "category": "display",       "description": "Background image URL or filename.", "example": "http://192.168.1.1:8080/media/logo.jpg", "default": ""},
     {"name": "screensaver_timeout","category":"display",       "description": "Idle seconds before screensaver (0 = disabled).", "example": "120", "default": "0"},
     {"name": "admin_password",   "category": "security",      "description": "Local admin web UI password.", "example": "Str0ngP@ss", "default": ""},
     {"name": "web_ui_enabled",   "category": "security",      "description": "Enable (1) or disable (0) the web management interface.", "example": "1", "default": "1"},
@@ -51,10 +52,10 @@
     {"name": "dial_plan",        "category": "call_features", "description": "Polycom digitmap dial plan string.", "example": "[2-9]11|0T|011xxx.T|[0-9]11|[0-9]{7,15}", "default": ""},
     {"name": "ntp_server",       "category": "provisioning",  "description": "Primary NTP time server hostname or IP.", "example": "0.pool.ntp.org", "default": "0.pool.ntp.org"},
     {"name": "gmt_offset",       "category": "provisioning",  "description": "GMT offset in seconds for the SNTP client.", "example": "36000", "default": "0"},
-    {"name": "provisioning_url", "category": "provisioning",  "description": "Provisioning server base URL.", "example": "http://192.168.1.1/admin/modules/quickprovisioner/provision.php", "default": ""},
-    {"name": "firmware_url",     "category": "provisioning",  "description": "Firmware URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1/firmware/sip.ld", "default": ""},
+    {"name": "provisioning_url", "category": "provisioning",  "description": "Provisioning server base URL.", "example": "http://192.168.1.1:8080", "default": ""},
+    {"name": "firmware_url",     "category": "provisioning",  "description": "Firmware application URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1:8080/firmware/sip.ld", "default": ""},
     {"name": "syslog_server",    "category": "diagnostics",   "description": "Remote syslog server hostname or IP.", "example": "192.168.1.50", "default": ""},
-    {"name": "ringtone_url",     "category": "display",       "description": "Custom ringtone URL (WAV file).", "example": "http://192.168.1.1/ringtones/MyRing.wav", "default": ""}
+    {"name": "ringtone_url",     "category": "display",       "description": "Custom ringtone URL (WAV file served by the provisioning server).", "example": "http://192.168.1.1:8080/ringtones/MyRing.wav", "default": ""}
   ],
   "visual_editor": {
     "svg_fallback": true,
@@ -67,7 +68,7 @@
       "screen_width": 210,
       "screen_height": 150
     },
-    "keys_per_page": 12,
+    "keys_per_page": 10,
     "keys": [
       {"index":1,  "x":12,  "y":66,  "width":44, "height":24, "page":1, "side":"left"},
       {"index":2,  "x":12,  "y":94,  "width":44, "height":24, "page":1, "side":"left"},

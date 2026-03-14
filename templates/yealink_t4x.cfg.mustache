@@ -40,10 +40,13 @@
     {"name": "transport",       "category": "sip",           "description": "SIP transport: UDP, TCP, TLS or DNS-SRV.", "example": "UDP", "default": "UDP"},
     {"name": "reg_expiry",      "category": "sip",           "description": "Registration expiry in seconds.", "example": "3600", "default": "3600"},
     {"name": "outbound_proxy_host","category":"sip",          "description": "Outbound proxy / SBC hostname or IP.", "example": "sbc.example.com", "default": ""},
+    {"name": "outbound_proxy_port","category":"sip",          "description": "Outbound proxy SIP port.", "example": "5060", "default": "5060"},
     {"name": "backup_server",   "category": "sip",           "description": "Backup SIP server address.", "example": "pbx2.example.com", "default": ""},
+    {"name": "backup_port",     "category": "sip",           "description": "Backup SIP server port.", "example": "5060", "default": "5060"},
     {"name": "voicemail_number","category": "call_features",  "description": "MWI subscribe / voicemail access number.", "example": "*97", "default": ""},
-    {"name": "wallpaper_url",   "category": "display",       "description": "HTTP URL of the background image file.", "example": "http://192.168.1.1/media/logo.jpg", "default": ""},
+    {"name": "wallpaper_url",   "category": "display",       "description": "HTTP URL of the background image file.", "example": "http://192.168.1.1:8080/media/logo.jpg", "default": ""},
     {"name": "ring_type",       "category": "display",       "description": "Ringtone filename or URL.", "example": "Ring1.wav", "default": "Ring1.wav"},
+    {"name": "ringtone_url",    "category": "display",       "description": "Custom ringtone WAV URL.", "example": "http://192.168.1.1:8080/ringtones/custom.wav", "default": ""},
     {"name": "screensaver_timeout","category":"display",      "description": "Idle seconds before screensaver activates (0 = disabled).", "example": "120", "default": "0"},
     {"name": "admin_password",  "category": "security",      "description": "New admin password (applied as admin:<new>).", "example": "Str0ngP@ss", "default": ""},
     {"name": "web_ui_enabled",  "category": "security",      "description": "Enable (1) or disable (0) the phone web server.", "example": "1", "default": "1"},
@@ -60,9 +63,8 @@
     {"name": "ntp_server",      "category": "provisioning",  "description": "Primary NTP time server hostname or IP.", "example": "0.pool.ntp.org", "default": "0.pool.ntp.org"},
     {"name": "timezone",        "category": "provisioning",  "description": "Yealink timezone offset string (e.g. +10).", "example": "+10", "default": "UTC"},
     {"name": "dst_enable",      "category": "provisioning",  "description": "Daylight saving time: 0=off, 1=automatic, 2=manual.", "example": "1", "default": "0"},
-    {"name": "provisioning_url","category": "provisioning",  "description": "Auto-provisioning server base URL.", "example": "http://192.168.1.1/admin/modules/quickprovisioner/provision.php", "default": ""},
-    {"name": "firmware_url",    "category": "provisioning",  "description": "Firmware binary URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1/firmware/T54W.rom", "default": ""},
-    {"name": "ringtone_url",    "category": "display",       "description": "Custom ringtone WAV URL.", "example": "http://192.168.1.1/ringtones/custom.wav", "default": ""},
+    {"name": "provisioning_url","category": "provisioning",  "description": "Auto-provisioning server base URL.", "example": "http://192.168.1.1:8080", "default": ""},
+    {"name": "firmware_url",    "category": "provisioning",  "description": "Firmware binary URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1:8080/firmware/T54W.rom", "default": ""},
     {"name": "syslog_server",   "category": "diagnostics",   "description": "Remote syslog server IP or hostname.", "example": "192.168.1.50", "default": ""},
     {"name": "debug_level",     "category": "diagnostics",   "description": "Syslog verbosity level (0-6, higher = more detail).", "example": "3", "default": "0"}
   ],
@@ -112,7 +114,7 @@
   }
 } }}
 #!version:1.0.0.1
-## Quick Provisioner - Yealink T3x/T4x/T5x ##
+## Pocket Provisioner - Yealink T3x/T4x/T5x ##
 
 {{#lines}}
 # ACCOUNT {{line_index}}

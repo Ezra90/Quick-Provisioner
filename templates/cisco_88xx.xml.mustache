@@ -31,7 +31,7 @@
     {"name": "outbound_proxy_host","category":"sip",            "description": "Outbound proxy hostname or IP.", "example": "sbc.example.com", "default": ""},
     {"name": "backup_server",     "category": "sip",           "description": "Backup SIP proxy address.", "example": "pbx2.example.com", "default": ""},
     {"name": "voicemail_number",  "category": "call_features", "description": "Messages access number.", "example": "*97", "default": ""},
-    {"name": "wallpaper_url",     "category": "display",       "description": "Background image URL.", "example": "http://192.168.1.1/media/logo.jpg", "default": ""},
+    {"name": "wallpaper_url",     "category": "display",       "description": "Background image URL.", "example": "http://192.168.1.1:8080/media/logo.jpg", "default": ""},
     {"name": "screensaver_timeout","category":"display",        "description": "Screen saver wait time in minutes.", "example": "10", "default": "0"},
     {"name": "admin_password",    "category": "security",      "description": "Phone admin / web UI password.", "example": "Str0ngP@ss", "default": ""},
     {"name": "web_ui_enabled",    "category": "security",      "description": "Enable (Yes) or disable (No) the web management UI.", "example": "Yes", "default": "Yes"},
@@ -45,12 +45,12 @@
     {"name": "cfw_no_answer",     "category": "call_features", "description": "Call forward no-answer dialing number.", "example": "voicemail", "default": ""},
     {"name": "dial_plan",         "category": "call_features", "description": "Cisco MPP dial plan string.", "example": "(9,8,**xx.|*xx.|[2-9]xxxxxx|1xxxxxxxxxx|xxxxxxxxxxxx)", "default": ""},
     {"name": "ntp_server",        "category": "provisioning",  "description": "Primary NTP server hostname or IP.", "example": "0.pool.ntp.org", "default": "0.pool.ntp.org"},
-    {"name": "timezone",          "category": "provisioning",  "description": "Cisco time zone GMT offset (e.g., GMT-08:00, GMT+10:00).", "example": "GMT+10:00", "default": "GMT-08:00"},
-    {"name": "provisioning_url",  "category": "provisioning",  "description": "Provisioning profile URL.", "example": "http://192.168.1.1/admin/modules/quickprovisioner/provision.php", "default": ""},
-    {"name": "firmware_url",      "category": "provisioning",  "description": "Firmware loads URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1/firmware/cisco.loads", "default": ""},
+    {"name": "timezone",          "category": "provisioning",  "description": "Cisco time zone GMT offset (e.g., GMT-08:00, GMT+10:00, GMT+05:30).", "example": "GMT+10:00", "default": "GMT-08:00"},
+    {"name": "provisioning_url",  "category": "provisioning",  "description": "Provisioning profile URL.", "example": "http://192.168.1.1:8080", "default": ""},
+    {"name": "firmware_url",      "category": "provisioning",  "description": "Firmware loads URL for auto-upgrade (leave blank to disable).", "example": "http://192.168.1.1:8080/firmware/cisco.loads", "default": ""},
     {"name": "syslog_server",     "category": "diagnostics",   "description": "Remote syslog server hostname or IP.", "example": "192.168.1.50", "default": ""},
     {"name": "debug_level",       "category": "diagnostics",   "description": "Syslog verbosity: EMERGENCY, ALERT, CRITICAL, ERROR, WARNING, NOTICE, INFO, or DEBUG.", "example": "NOTICE", "default": "NOTICE"},
-    {"name": "ringtone_url",      "category": "display",       "description": "Custom ringtone URL (WAV file).", "example": "http://192.168.1.1/ringtones/MyRing.wav", "default": ""}
+    {"name": "ringtone_url",      "category": "display",       "description": "Custom ringtone URL (WAV file served by the provisioning server).", "example": "http://192.168.1.1:8080/ringtones/MyRing.wav", "default": ""}
   ],
   "visual_editor": {
     "svg_fallback": true,
@@ -58,9 +58,9 @@
     "schematic": {
       "chassis_width": 340,
       "chassis_height": 540,
-      "screen_x": 65,
+      "screen_x": 62,
       "screen_y": 58,
-      "screen_width": 210,
+      "screen_width": 260,
       "screen_height": 150
     },
     "keys_per_page": 5,
@@ -80,7 +80,7 @@
 } }}
 <?xml version="1.0" encoding="UTF-8"?>
 <flat-profile>
-<!-- Quick Provisioner - Cisco MPP 8800 Series (8851/8865) -->
+<!-- Pocket Provisioner - Cisco MPP 8800 Series (8851/8865) -->
 <!-- Uses flat-profile format required by Cisco Multiplatform Phones -->
 
 <!-- System Configuration -->
@@ -116,7 +116,7 @@
 <!-- Provisioning Configuration -->
 <Provision_Enable>Yes</Provision_Enable>
 <Resync_On_Reset>Yes</Resync_On_Reset>
-<Profile_Rule>{{provisioning_url}}?mac={{mac_address}}</Profile_Rule>
+<Profile_Rule>{{provisioning_url}}/{{mac_address}}.xml</Profile_Rule>
 
 {{#has_firmware}}
 <!-- Firmware Upgrade -->
@@ -124,7 +124,7 @@
 <Upgrade_Rule>{{firmware_url}}</Upgrade_Rule>
 {{/has_firmware}}
 
-<!-- Line Configuration -->
+<!-- Line 1 Configuration -->
 {{#lines}}
 <Line_Enable_{{line_index}}_>Yes</Line_Enable_{{line_index}}_>
 <Proxy_{{line_index}}_>{{sip_server}}</Proxy_{{line_index}}_>
