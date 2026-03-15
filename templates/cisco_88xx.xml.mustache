@@ -130,6 +130,8 @@
 
 <!-- Line 1 Configuration -->
 {{#lines}}
+{{#has_sip_server}}
+<!-- Standalone mode: Full SIP account configured -->
 <Line_Enable_{{line_index}}_>Yes</Line_Enable_{{line_index}}_>
 <Proxy_{{line_index}}_>{{sip_server}}</Proxy_{{line_index}}_>
 <SIP_Port_{{line_index}}_>{{sip_port}}</SIP_Port_{{line_index}}_>
@@ -152,6 +154,12 @@
 {{#has_voicemail}}
 <Voice_Mail_Server_{{line_index}}_>{{voicemail_number}}</Voice_Mail_Server_{{line_index}}_>
 {{/has_voicemail}}
+{{/has_sip_server}}
+{{^has_sip_server}}
+<!-- DMS mode: Line disabled – DMS server will provide SIP credentials -->
+<Line_Enable_{{line_index}}_>No</Line_Enable_{{line_index}}_>
+<Register_{{line_index}}_>No</Register_{{line_index}}_>
+{{/has_sip_server}}
 {{/lines}}
 
 <!-- Call Features -->

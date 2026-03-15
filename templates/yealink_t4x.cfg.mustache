@@ -126,6 +126,8 @@
 
 {{#lines}}
 # ACCOUNT {{line_index}}
+{{#has_sip_server}}
+# Standalone mode: Full SIP account configured
 account.{{line_index}}.enable = 1
 account.{{line_index}}.label = {{label}}
 account.{{line_index}}.display_name = {{display_name}}
@@ -152,6 +154,11 @@ account.{{line_index}}.voicemail.number = {{voicemail_number}}
 {{#has_auto_answer}}
 account.{{line_index}}.auto_answer = {{auto_answer}}
 {{/has_auto_answer}}
+{{/has_sip_server}}
+{{^has_sip_server}}
+# DMS mode: Account disabled – DMS server will provide SIP credentials
+account.{{line_index}}.enable = 0
+{{/has_sip_server}}
 {{/lines}}
 
 {{#has_auto_answer}}

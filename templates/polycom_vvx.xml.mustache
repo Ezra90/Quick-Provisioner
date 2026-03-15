@@ -96,8 +96,10 @@
 } }}
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <PHONE_CONFIG>
-  <REGISTRATION
 {{#lines}}
+{{#has_sip_server}}
+  <!-- Standalone mode: Full SIP registration configured -->
+  <REGISTRATION
     reg.{{line_index}}.label="{{label}}"
     reg.{{line_index}}.displayName="{{display_name}}"
     reg.{{line_index}}.address="{{user_name}}"
@@ -126,8 +128,13 @@
     reg.{{line_index}}.forward.noanswer.enable="1"
     reg.{{line_index}}.forward.noanswer.contact="{{cfw_no_answer}}"
 {{/has_cfw_no_answer}}
-{{/lines}}
   />
+{{/has_sip_server}}
+{{^has_sip_server}}
+  <!-- DMS mode: Registration disabled – DMS server will provide SIP credentials -->
+  <REGISTRATION />
+{{/has_sip_server}}
+{{/lines}}
 {{#has_outbound_proxy}}
   <voIpProt
     voIpProt.SIP.outboundProxy.address="{{outbound_proxy_host}}"
