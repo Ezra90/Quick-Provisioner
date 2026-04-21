@@ -1,0 +1,283 @@
+{{! META: {
+  "manufacturer": "Yealink",
+  "model_family": "T4x/T5x",
+  "display_name": "Yealink T3x/T4x/T5x",
+  "config_format": "cfg",
+  "content_type": "text/plain",
+  "filename_pattern": "{mac}.cfg",
+  "supported_models": ["T54W", "T46U", "T48G", "T57W", "T58W", "T58G"],
+  "max_line_keys": 29,
+  "wallpaper_specs": {
+    "T54W": {"width": 480, "height": 272},
+    "T46U": {"width": 480, "height": 272},
+    "T48G": {"width": 800, "height": 480},
+    "T57W": {"width": 800, "height": 480},
+    "T58W": {"width": 1024, "height": 600},
+    "T58G": {"width": 800, "height": 480}
+  },
+  "type_mapping": {
+    "line": 15,
+    "speed_dial": 13,
+    "blf": 16,
+    "voicemail": 18,
+    "transfer": 10,
+    "pickup": 11,
+    "dtmf": 34,
+    "park": 16
+  },
+  "categories": [
+    {"id": "sip",          "label": "SIP & Registration",    "icon": "📞", "order": 1},
+    {"id": "display",      "label": "Display & Audio",        "icon": "📱", "order": 2},
+    {"id": "security",     "label": "Security",               "icon": "🔑", "order": 3},
+    {"id": "network",      "label": "Network",                "icon": "🌐", "order": 4},
+    {"id": "call_features","label": "Call Features",          "icon": "📲", "order": 5},
+    {"id": "provisioning", "label": "Provisioning & Time",    "icon": "🔧", "order": 6},
+    {"id": "diagnostics",  "label": "Diagnostics & Logs",     "icon": "🔍", "order": 7}
+  ],
+  "variables": [
+    {"name": "sip_server",      "category": "sip",           "description": "Primary SIP registrar hostname or IP address where the phone registers.", "example": "pbx.example.com", "default": ""},
+    {"name": "sip_port",        "category": "sip",           "description": "SIP signalling port (standard is 5060 for UDP/TCP, 5061 for TLS).", "example": "5060", "default": "5060"},
+    {"name": "transport",       "category": "sip",           "description": "SIP transport protocol: UDP (standard), TCP (reliable), TLS (encrypted), or DNS-SRV (auto-discovery).", "example": "UDP", "default": "UDP"},
+    {"name": "reg_expiry",      "category": "sip",           "description": "How often the phone re-registers with the SIP server (in seconds). Lower values detect outages faster but increase traffic.", "example": "3600", "default": "3600"},
+    {"name": "outbound_proxy_host","category":"sip",          "description": "Outbound proxy or Session Border Controller (SBC) for NAT traversal. Leave blank if not using a proxy.", "example": "sbc.example.com", "default": ""},
+    {"name": "outbound_proxy_port","category":"sip",          "description": "Port for the outbound proxy/SBC.", "example": "5060", "default": "5060"},
+    {"name": "backup_server",   "category": "sip",           "description": "Failover SIP registrar address used when the primary server is unreachable.", "example": "pbx2.example.com", "default": ""},
+    {"name": "backup_port",     "category": "sip",           "description": "Port for the backup SIP server.", "example": "5060", "default": "5060"},
+    {"name": "voicemail_number","category": "call_features",  "description": "Voicemail access number. Used for MWI (Message Waiting Indicator) subscription and voicemail button.", "example": "*97", "default": ""},
+    {"name": "wallpaper_url",   "category": "display",       "description": "Full HTTP URL to a PNG/JPG background image. The image should match your phone's screen resolution.", "example": "http://192.168.1.1:8080/media/logo.jpg", "default": ""},
+    {"name": "ring_type",       "category": "display",       "description": "Built-in ringtone name (Ring1.wav to Ring8.wav) or custom ringtone filename.", "example": "Ring1.wav", "default": "Ring1.wav"},
+    {"name": "ringtone_url",    "category": "display",       "description": "HTTP URL to a custom ringtone WAV file. Must be 16-bit PCM, 8-16kHz sample rate.", "example": "http://192.168.1.1:8080/ringtones/custom.wav", "default": ""},
+    {"name": "screensaver_timeout","category":"display",      "description": "Seconds of inactivity before the screensaver activates. Set to 0 to disable the screensaver.", "example": "120", "default": "0"},
+    {"name": "admin_password",  "category": "security",      "description": "New administrator password for web UI and phone settings. Leave blank to keep factory default.", "example": "Str0ngP@ss", "default": ""},
+    {"name": "web_ui_enabled",  "category": "security",      "description": "Enable (1) or disable (0) the phone's built-in web management interface. Disabling improves security.", "example": "1", "default": "1"},
+    {"name": "voice_vlan_id",   "category": "network",       "description": "802.1Q VLAN ID for voice traffic (1-4094). Set this if your network segregates voice and data VLANs.", "example": "100", "default": ""},
+    {"name": "data_vlan_id",    "category": "network",       "description": "802.1Q VLAN ID for the PC passthrough port. Only needed if PC traffic uses a different VLAN.", "example": "1", "default": ""},
+    {"name": "cdp_lldp_enabled","category": "network",       "description": "Enable (1) CDP (Cisco Discovery Protocol) and LLDP (Link Layer Discovery Protocol). These protocols auto-discover VLAN tags and PoE settings from the network switch.", "example": "1", "default": "1"},
+    {"name": "auto_answer",     "category": "call_features",  "description": "Enable (1) automatic call answering. Useful for intercom, paging systems, or hands-free operation.", "example": "1", "default": "0"},
+    {"name": "dnd_enabled",     "category": "call_features",  "description": "Enable (1) Do Not Disturb by default. When on, the phone silently rejects all incoming calls.", "example": "0", "default": "0"},
+    {"name": "call_waiting",    "category": "call_features",  "description": "Enable (1) call waiting to allow a second incoming call while already on a call.", "example": "1", "default": "1"},
+    {"name": "cfw_always",      "category": "call_features",  "description": "Call Forward Always - all calls are immediately forwarded to this number.", "example": "+61400000000", "default": ""},
+    {"name": "cfw_busy",        "category": "call_features",  "description": "Call Forward Busy - calls forward to this number when the line is busy.", "example": "voicemail", "default": ""},
+    {"name": "cfw_no_answer",   "category": "call_features",  "description": "Call Forward No Answer - calls forward to this number after the ring timeout.", "example": "voicemail", "default": ""},
+    {"name": "dial_plan",       "category": "call_features",  "description": "Yealink digitmap dial plan string controlling call routing patterns. Uses regex-like syntax.", "example": "(x+|\\+x+|xxx|xx+)", "default": ""},
+    {"name": "ntp_server",      "category": "provisioning",  "description": "Network Time Protocol server for automatic clock synchronization.", "example": "0.pool.ntp.org", "default": "0.pool.ntp.org"},
+    {"name": "timezone",        "category": "provisioning",  "description": "Timezone offset from UTC (e.g. +10 for AEST, -5 for EST).", "example": "+10", "default": "UTC"},
+    {"name": "dst_enable",      "category": "provisioning",  "description": "Daylight Saving Time mode: 0=disabled, 1=automatic (recommended), 2=manual.", "example": "1", "default": "0"},
+    {"name": "provisioning_url","category": "provisioning",  "description": "Base URL where the phone checks for configuration updates. Used for auto-provisioning on boot.", "example": "http://192.168.1.1:8080", "default": ""},
+    {"name": "firmware_url",    "category": "provisioning",  "description": "Full URL to firmware .rom file for automatic upgrades. Yealink firmware files can be downloaded from support.yealink.com", "example": "http://192.168.1.1:8080/firmware/T54W.rom", "default": ""},
+    {"name": "syslog_server",   "category": "diagnostics",   "description": "Remote syslog server IP for centralized logging and troubleshooting.", "example": "192.168.1.50", "default": ""},
+    {"name": "debug_level",     "category": "diagnostics",   "description": "Syslog verbosity: 0=emergency only, 3=errors+warnings, 6=full debug. Higher values generate more logs.", "example": "3", "default": "0"}
+  ],
+  "visual_editor": {
+    "svg_fallback": true,
+    "expandable_layout": false,
+    "schematic": {
+      "chassis_width": 340,
+      "chassis_height": 540,
+      "screen_x": 65,
+      "screen_y": 58,
+      "screen_width": 210,
+      "screen_height": 150
+    },
+    "keys_per_page": 10,
+    "model_info": {
+      "T54W": {"type": "physical", "max_keys": 27, "keys_per_page": 10},
+      "T46U": {"type": "physical", "max_keys": 27, "keys_per_page": 10},
+      "T48G": {"type": "touchscreen", "max_keys": 29, "layout": "grid"},
+      "T57W": {"type": "physical", "max_keys": 27, "keys_per_page": 10},
+      "T58W": {"type": "touchscreen", "max_keys": 27, "layout": "grid"},
+      "T58G": {"type": "touchscreen", "max_keys": 27, "layout": "grid"}
+    },
+    "keys": [
+      {"index":1,  "x":12,  "y":66,  "width":44, "height":24, "page":1, "side":"left"},
+      {"index":2,  "x":12,  "y":94,  "width":44, "height":24, "page":1, "side":"left"},
+      {"index":3,  "x":12,  "y":122, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":4,  "x":12,  "y":150, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":5,  "x":12,  "y":178, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":6,  "x":286, "y":66,  "width":44, "height":24, "page":1, "side":"right"},
+      {"index":7,  "x":286, "y":94,  "width":44, "height":24, "page":1, "side":"right"},
+      {"index":8,  "x":286, "y":122, "width":44, "height":24, "page":1, "side":"right"},
+      {"index":9,  "x":286, "y":150, "width":44, "height":24, "page":1, "side":"right"},
+      {"index":10, "x":286, "y":178, "width":44, "height":24, "page":1, "side":"right"},
+      {"index":11, "x":12,  "y":66,  "width":44, "height":24, "page":2, "side":"left"},
+      {"index":12, "x":12,  "y":94,  "width":44, "height":24, "page":2, "side":"left"},
+      {"index":13, "x":12,  "y":122, "width":44, "height":24, "page":2, "side":"left"},
+      {"index":14, "x":12,  "y":150, "width":44, "height":24, "page":2, "side":"left"},
+      {"index":15, "x":12,  "y":178, "width":44, "height":24, "page":2, "side":"left"},
+      {"index":16, "x":286, "y":66,  "width":44, "height":24, "page":2, "side":"right"},
+      {"index":17, "x":286, "y":94,  "width":44, "height":24, "page":2, "side":"right"},
+      {"index":18, "x":286, "y":122, "width":44, "height":24, "page":2, "side":"right"},
+      {"index":19, "x":286, "y":150, "width":44, "height":24, "page":2, "side":"right"},
+      {"index":20, "x":286, "y":178, "width":44, "height":24, "page":2, "side":"right"},
+      {"index":21, "x":12,  "y":66,  "width":44, "height":24, "page":3, "side":"left"},
+      {"index":22, "x":12,  "y":94,  "width":44, "height":24, "page":3, "side":"left"},
+      {"index":23, "x":12,  "y":122, "width":44, "height":24, "page":3, "side":"left"},
+      {"index":24, "x":12,  "y":150, "width":44, "height":24, "page":3, "side":"left"},
+      {"index":25, "x":12,  "y":178, "width":44, "height":24, "page":3, "side":"left"},
+      {"index":26, "x":286, "y":66,  "width":44, "height":24, "page":3, "side":"right"},
+      {"index":27, "x":286, "y":94,  "width":44, "height":24, "page":3, "side":"right"},
+      {"index":28, "x":286, "y":122, "width":44, "height":24, "page":3, "side":"right"},
+      {"index":29, "x":286, "y":150, "width":44, "height":24, "page":3, "side":"right"}
+    ]
+  }
+} }}
+#!version:1.0.0.1
+## Pocket-Provisioner - Yealink T3x/T4x/T5x ##
+
+{{#lines}}
+# ACCOUNT {{line_index}}
+{{#has_sip_server}}
+# Standalone mode: Full SIP account configured
+account.{{line_index}}.enable = 1
+account.{{line_index}}.label = {{label}}
+account.{{line_index}}.display_name = {{display_name}}
+account.{{line_index}}.auth_name = {{auth_name}}
+account.{{line_index}}.user_name = {{user_name}}
+account.{{line_index}}.password = {{password}}
+account.{{line_index}}.sip_server.1.address = {{sip_server}}
+account.{{line_index}}.sip_server.1.port = {{sip_port}}
+account.{{line_index}}.sip_server.1.transport_type = {{transport_code}}
+# transport_type: 0=UDP 1=TCP 2=TLS 3=DNS-SRV
+account.{{line_index}}.sip_server.1.expires = {{expires}}
+{{#has_outbound_proxy}}
+account.{{line_index}}.outbound_proxy_enable = 1
+account.{{line_index}}.outbound_proxy.1.address = {{outbound_proxy_host}}
+account.{{line_index}}.outbound_proxy.1.port = {{outbound_proxy_port}}
+{{/has_outbound_proxy}}
+{{#has_backup_server}}
+account.{{line_index}}.sip_server.2.address = {{backup_server}}
+account.{{line_index}}.sip_server.2.port = {{backup_port}}
+{{/has_backup_server}}
+{{#has_voicemail}}
+account.{{line_index}}.voicemail.number = {{voicemail_number}}
+{{/has_voicemail}}
+{{#has_auto_answer}}
+account.{{line_index}}.auto_answer = {{auto_answer}}
+{{/has_auto_answer}}
+{{/has_sip_server}}
+{{^has_sip_server}}
+# DMS mode: Account disabled – DMS server will provide SIP credentials
+account.{{line_index}}.enable = 0
+{{/has_sip_server}}
+{{/lines}}
+
+{{#has_auto_answer}}
+# AUTO ANSWER MODE
+features.intercom.allow = 1
+features.intercom.mute = 0
+features.intercom.barge = 1
+{{/has_auto_answer}}
+
+# DISPLAY
+{{#wallpaper_url}}
+phone_setting.backgrounds = {{wallpaper_url}}
+{{/wallpaper_url}}
+phone_setting.ring_type = {{ring_type}}
+{{#has_screensaver_timeout}}
+screensaver.wait_time = {{screensaver_timeout}}
+{{/has_screensaver_timeout}}
+
+{{#vlan_enabled}}
+# VLAN
+static.network.vlan.internet_port_enable = 1
+static.network.vlan.internet_port_vid = {{voice_vlan_id}}
+{{#has_data_vlan}}
+static.network.vlan.pc_port_enable = 1
+static.network.vlan.pc_port_vid = {{data_vlan_id}}
+{{/has_data_vlan}}
+{{/vlan_enabled}}
+
+{{#has_cdp_lldp}}
+# CDP / LLDP
+network.lldp.enable = {{cdp_lldp_enabled}}
+network.cdp.enable = {{cdp_lldp_enabled}}
+{{/has_cdp_lldp}}
+
+{{#has_dnd}}
+# DO NOT DISTURB
+features.dnd.enable = {{dnd_enabled}}
+{{/has_dnd}}
+
+{{#has_call_waiting}}
+# CALL WAITING
+features.call_waiting.enable = {{call_waiting}}
+{{/has_call_waiting}}
+
+{{#has_cfw_always}}
+# CALL FORWARD ALWAYS
+forward.always.enable = 1
+forward.always.target = {{cfw_always}}
+{{/has_cfw_always}}
+
+{{#has_cfw_busy}}
+# CALL FORWARD BUSY
+forward.busy.enable = 1
+forward.busy.target = {{cfw_busy}}
+{{/has_cfw_busy}}
+
+{{#has_cfw_no_answer}}
+# CALL FORWARD NO ANSWER
+forward.no_answer.enable = 1
+forward.no_answer.target = {{cfw_no_answer}}
+{{/has_cfw_no_answer}}
+
+{{#has_dial_plan}}
+# DIAL PLAN
+dialplan.digitmap = {{dial_plan}}
+{{/has_dial_plan}}
+
+{{#line_keys}}
+linekey.{{position}}.type = {{type_code}}
+linekey.{{position}}.value = {{key_value}}
+linekey.{{position}}.label = {{key_label}}
+linekey.{{position}}.line = {{key_line}}
+{{#is_blf}}
+linekey.{{position}}.pickup_value = {{pickup_code}}
+{{/is_blf}}
+{{/line_keys}}
+
+{{#expansion_keys}}
+expansion_module.{{module}}.key.{{position}}.type = {{type_code}}
+expansion_module.{{module}}.key.{{position}}.value = {{key_value}}
+expansion_module.{{module}}.key.{{position}}.label = {{key_label}}
+{{/expansion_keys}}
+
+{{#remote_phonebooks}}
+remote_phonebook.data.{{index}}.url = {{url}}
+remote_phonebook.data.{{index}}.name = {{name}}
+{{/remote_phonebooks}}
+
+# NTP / TIME
+local_time.ntp_server1 = {{ntp_server}}
+local_time.ntp_server2 = 1.pool.ntp.org
+local_time.time_zone = {{timezone}}
+local_time.summer_time = {{dst_enable}}
+
+# AUTO PROVISIONING
+static.auto_provision.server.url = {{provisioning_url}}
+static.auto_provision.server.username = {{provision_user}}
+static.auto_provision.server.password = {{provision_pass}}
+static.auto_provision.enable = 1
+static.auto_provision.power_on = 1
+static.auto_provision.custom.protect = 0
+static.auto_provision.reboot_force.enable = 1
+features.show_quick_setup.enable = 0
+
+{{#has_firmware}}
+# FIRMWARE UPGRADE
+static.firmware.url = {{firmware_url}}
+{{/has_firmware}}
+
+# SECURITY
+# Format: static.security.user_password = <current_password>:<new_password>
+# Use "admin:" prefix to set new password when current is default "admin"
+static.security.user_password = admin:{{admin_password}}
+{{#has_web_ui}}
+web_server.enabled = {{web_ui_enabled}}
+{{/has_web_ui}}
+
+{{#has_syslog}}
+# SYSLOG
+syslog.mode = 2
+syslog.server = {{syslog_server}}
+{{/has_syslog}}

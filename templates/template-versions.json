@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "generated": "2026-04-11T23:27:42Z",
+  "build_number": 205,
+  "commit": "469715f",
+  "templates": {
+    "cisco_88xx.xml.mustache": {
+      "sha256": "953c3d4f891991c88038710e3ac0bebf3f47b4bbb1edd382f2c901ee36298836",
+      "last_modified": "2026-03-15T04:38:17Z",
+      "last_author": "github-actions[bot]"
+    },
+    "polycom_vvx.xml.mustache": {
+      "sha256": "2efc85af9ad640ac24d6f7ad2f56597c2fa0d101993a839526826dac27c98271",
+      "last_modified": "2026-04-11T23:25:00Z",
+      "last_author": "copilot-swe-agent[bot]"
+    },
+    "yealink_t4x.cfg.mustache": {
+      "sha256": "3e97485f6a4fd0bbe6542cd5f0e08caefdff2181bdab44cf123953171e1fce9b",
+      "last_modified": "2026-03-15T04:38:17Z",
+      "last_author": "github-actions[bot]"
+    }
+  }
+}

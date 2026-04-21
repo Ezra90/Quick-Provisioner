@@ -1,0 +1,20 @@
+<module>
+    <rawname>quickprovisioner</rawname>
+    <name>Quick-Provisioner</name>
+    <version>0.1-dev</version>
+    <publisher>Ezra90</publisher>
+    <type>tool</type>
+    <category>Applications</category>
+    <description>
+        Always-on DMS / Endpoint Manager for FreePBX. Serves phone configurations, wallpapers, ringtones, firmware, and phonebooks via Mustache templates. Compatible with Pocket Provisioner Android app. Supports Yealink, Polycom/Poly, and Cisco handsets.
+    </description>
+    <menuitems>
+        <quickprovisioner>Quick-Provisioner</quickprovisioner>
+    </menuitems>
+    <depends>
+        <version>13.0</version>
+    </depends>
+    <supported>
+        <version>16.0</version>
+    </supported>
+</module>

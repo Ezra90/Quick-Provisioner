@@ -1,0 +1,210 @@
+{{! META: {
+  "manufacturer": "Cisco",
+  "model_family": "88xx MPP",
+  "display_name": "Cisco 8800 MPP Series",
+  "config_format": "xml",
+  "content_type": "application/xml",
+  "filename_pattern": "{mac}.xml",
+  "supported_models": ["Cisco 8851", "Cisco 8865"],
+  "max_line_keys": 10,
+  "wallpaper_specs": {
+    "Cisco 8851": {"width": 800, "height": 480},
+    "Cisco 8865": {"width": 800, "height": 480}
+  },
+  "type_mapping": {
+    "line": 1,
+    "speed_dial": 2,
+    "blf": 3
+  },
+  "categories": [
+    {"id": "sip",          "label": "SIP & Registration",    "icon": "📞", "order": 1},
+    {"id": "display",      "label": "Display & Audio",        "icon": "📱", "order": 2},
+    {"id": "security",     "label": "Security",               "icon": "🔑", "order": 3},
+    {"id": "network",      "label": "Network",                "icon": "🌐", "order": 4},
+    {"id": "call_features","label": "Call Features",          "icon": "📲", "order": 5},
+    {"id": "provisioning", "label": "Provisioning & Time",    "icon": "🔧", "order": 6},
+    {"id": "diagnostics",  "label": "Diagnostics & Logs",     "icon": "🔍", "order": 7}
+  ],
+  "variables": [
+    {"name": "sip_server",        "category": "sip",           "description": "Primary SIP registrar hostname or IP address where the phone registers.", "example": "pbx.example.com", "default": ""},
+    {"name": "sip_port",          "category": "sip",           "description": "SIP signalling port (standard is 5060 for UDP/TCP, 5061 for TLS).", "example": "5060", "default": "5060"},
+    {"name": "outbound_proxy_host","category":"sip",            "description": "Outbound proxy or Session Border Controller (SBC) for NAT traversal. Leave blank if not required.", "example": "sbc.example.com", "default": ""},
+    {"name": "backup_server",     "category": "sip",           "description": "Failover SIP registrar address used when the primary server is unreachable.", "example": "pbx2.example.com", "default": ""},
+    {"name": "voicemail_number",  "category": "call_features", "description": "Voicemail access number for MWI (Message Waiting Indicator) and the messages button.", "example": "*97", "default": ""},
+    {"name": "wallpaper_url",     "category": "display",       "description": "Full HTTP URL to a PNG/JPG background image. Cisco 88xx models use 800x480 resolution.", "example": "http://192.168.1.1:8080/media/logo.jpg", "default": ""},
+    {"name": "screensaver_timeout","category":"display",        "description": "Minutes of inactivity before the screen saver activates. Set to 0 to disable.", "example": "10", "default": "0"},
+    {"name": "admin_password",    "category": "security",      "description": "Administrator password for the phone's web interface. Leave blank to keep factory default.", "example": "Str0ngP@ss", "default": ""},
+    {"name": "web_ui_enabled",    "category": "security",      "description": "Enable (Yes) or disable (No) the phone's web management interface. Uses Yes/No not 1/0.", "example": "Yes", "default": "Yes"},
+    {"name": "cdp_lldp_enabled",  "category": "network",       "description": "Enable (Yes) CDP (Cisco Discovery Protocol) and LLDP-MED for auto-discovery of VLAN and PoE settings from the network switch.", "example": "Yes", "default": "Yes"},
+    {"name": "voice_vlan_id",     "category": "network",       "description": "802.1Q VLAN ID for voice traffic (1-4094). Set this if your network segregates voice and data VLANs.", "example": "100", "default": ""},
+    {"name": "auto_answer",       "category": "call_features", "description": "Automatically answer incoming calls (Yes/No). Useful for intercom or paging systems.", "example": "Yes", "default": "No"},
+    {"name": "dnd_enabled",       "category": "call_features", "description": "Enable Do Not Disturb by default (Yes/No). When on, the phone silently rejects all incoming calls.", "example": "No", "default": "No"},
+    {"name": "call_waiting",      "category": "call_features", "description": "Enable call waiting to allow a second incoming call while already on a call (Yes/No).", "example": "Yes", "default": "Yes"},
+    {"name": "cfw_always",        "category": "call_features", "description": "Call Forward Always - all calls are immediately forwarded to this number.", "example": "+61400000000", "default": ""},
+    {"name": "cfw_busy",          "category": "call_features", "description": "Call Forward Busy - calls forward to this number when the line is busy.", "example": "voicemail", "default": ""},
+    {"name": "cfw_no_answer",     "category": "call_features", "description": "Call Forward No Answer - calls forward to this number after the ring timeout.", "example": "voicemail", "default": ""},
+    {"name": "dial_plan",         "category": "call_features", "description": "Cisco MPP dial plan string using TAPI-like pattern matching. Controls call routing and digit collection.", "example": "(9,8,**xx.|*xx.|[2-9]xxxxxx|1xxxxxxxxxx|xxxxxxxxxxxx)", "default": ""},
+    {"name": "ntp_server",        "category": "provisioning",  "description": "Network Time Protocol server for automatic clock synchronization.", "example": "0.pool.ntp.org", "default": "0.pool.ntp.org"},
+    {"name": "timezone",          "category": "provisioning",  "description": "Cisco timezone in GMT offset format. Examples: GMT+10:00 (AEST), GMT-05:00 (EST), GMT+05:30 (IST).", "example": "GMT+10:00", "default": "GMT-08:00"},
+    {"name": "provisioning_url",  "category": "provisioning",  "description": "Base URL where the phone checks for configuration updates on boot.", "example": "http://192.168.1.1:8080", "default": ""},
+    {"name": "firmware_url",      "category": "provisioning",  "description": "Full URL to Cisco firmware (.loads file) for automatic upgrades. Download firmware from software.cisco.com", "example": "http://192.168.1.1:8080/firmware/cisco.loads", "default": ""},
+    {"name": "syslog_server",     "category": "diagnostics",   "description": "Remote syslog server IP for centralized logging and troubleshooting.", "example": "192.168.1.50", "default": ""},
+    {"name": "debug_level",       "category": "diagnostics",   "description": "Syslog verbosity level: EMERGENCY, ALERT, CRITICAL, ERROR, WARNING, NOTICE, INFO, or DEBUG.", "example": "NOTICE", "default": "NOTICE"},
+    {"name": "ringtone_url",      "category": "display",       "description": "HTTP URL to a custom ringtone WAV file. Must be 16-bit PCM, 8kHz mono, max 300KB.", "example": "http://192.168.1.1:8080/ringtones/MyRing.wav", "default": ""}
+  ],
+  "visual_editor": {
+    "svg_fallback": true,
+    "expandable_layout": false,
+    "schematic": {
+      "chassis_width": 340,
+      "chassis_height": 540,
+      "screen_x": 62,
+      "screen_y": 58,
+      "screen_width": 260,
+      "screen_height": 150
+    },
+    "keys_per_page": 5,
+    "model_info": {
+      "Cisco 8851": {"type": "physical", "max_keys": 10, "keys_per_page": 5, "layout": "left_only"},
+      "Cisco 8865": {"type": "physical", "max_keys": 10, "keys_per_page": 5, "layout": "left_only"}
+    },
+    "keys": [
+      {"index":1,  "x":12, "y":66,  "width":44, "height":24, "page":1, "side":"left"},
+      {"index":2,  "x":12, "y":94,  "width":44, "height":24, "page":1, "side":"left"},
+      {"index":3,  "x":12, "y":122, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":4,  "x":12, "y":150, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":5,  "x":12, "y":178, "width":44, "height":24, "page":1, "side":"left"},
+      {"index":6,  "x":12, "y":66,  "width":44, "height":24, "page":2, "side":"left"},
+      {"index":7,  "x":12, "y":94,  "width":44, "height":24, "page":2, "side":"left"},
+      {"index":8,  "x":12, "y":122, "width":44, "height":24, "page":2, "side":"left"},
+      {"index":9,  "x":12, "y":150, "width":44, "height":24, "page":2, "side":"left"},
+      {"index":10, "x":12, "y":178, "width":44, "height":24, "page":2, "side":"left"}
+    ]
+  }
+} }}
+<?xml version="1.0" encoding="UTF-8"?>
+<flat-profile>
+<!-- Pocket-Provisioner - Cisco MPP 8800 Series (8851/8865) -->
+<!-- Uses flat-profile format required by Cisco Multiplatform Phones -->
+
+<!-- System Configuration -->
+<Enable_Web_Server>Yes</Enable_Web_Server>
+{{#has_web_ui}}
+<Enable_Web_Admin_Access>{{#is_web_ui_enabled}}Yes{{/is_web_ui_enabled}}{{^is_web_ui_enabled}}No{{/is_web_ui_enabled}}</Enable_Web_Admin_Access>
+{{/has_web_ui}}
+{{#admin_password}}
+<Admin_Password>{{admin_password}}</Admin_Password>
+{{/admin_password}}
+
+<!-- Network Settings -->
+{{#has_cdp_lldp}}
+<Enable_CDP>{{#is_cdp_lldp_enabled}}Yes{{/is_cdp_lldp_enabled}}{{^is_cdp_lldp_enabled}}No{{/is_cdp_lldp_enabled}}</Enable_CDP>
+<Enable_LLDP-MED>{{#is_cdp_lldp_enabled}}Yes{{/is_cdp_lldp_enabled}}{{^is_cdp_lldp_enabled}}No{{/is_cdp_lldp_enabled}}</Enable_LLDP-MED>
+{{/has_cdp_lldp}}
+{{#vlan_enabled}}
+<Enable_VLAN>Yes</Enable_VLAN>
+<VLAN_ID>{{voice_vlan_id}}</VLAN_ID>
+{{/vlan_enabled}}
+
+<!-- Time Settings -->
+<Primary_NTP_Server>{{ntp_server}}</Primary_NTP_Server>
+<Time_Zone>{{timezone}}</Time_Zone>
+<Daylight_Saving_Time_Enable>Yes</Daylight_Saving_Time_Enable>
+
+{{#has_syslog}}
+<!-- Syslog / Diagnostics -->
+<Syslog_Server>{{syslog_server}}</Syslog_Server>
+<Debug_Level>{{debug_level}}</Debug_Level>
+{{/has_syslog}}
+
+<!-- Provisioning Configuration -->
+<Provision_Enable>Yes</Provision_Enable>
+<Resync_On_Reset>Yes</Resync_On_Reset>
+<Profile_Rule>{{provisioning_url}}/{{mac_address}}.xml</Profile_Rule>
+
+{{#has_firmware}}
+<!-- Firmware Upgrade -->
+<Upgrade_Enable>Yes</Upgrade_Enable>
+<Upgrade_Rule>{{firmware_url}}</Upgrade_Rule>
+{{/has_firmware}}
+
+<!-- Line 1 Configuration -->
+{{#lines}}
+{{#has_sip_server}}
+<!-- Standalone mode: Full SIP account configured -->
+<Line_Enable_{{line_index}}_>Yes</Line_Enable_{{line_index}}_>
+<Proxy_{{line_index}}_>{{sip_server}}</Proxy_{{line_index}}_>
+<SIP_Port_{{line_index}}_>{{sip_port}}</SIP_Port_{{line_index}}_>
+<SIP_Transport_{{line_index}}_>{{transport}}</SIP_Transport_{{line_index}}_>
+<Register_{{line_index}}_>Yes</Register_{{line_index}}_>
+<Register_Expires_{{line_index}}_>{{expires}}</Register_Expires_{{line_index}}_>
+
+<!-- Subscriber Information for Line {{line_index}} -->
+<Display_Name_{{line_index}}_>{{display_name}}</Display_Name_{{line_index}}_>
+<User_ID_{{line_index}}_>{{user_name}}</User_ID_{{line_index}}_>
+<Auth_ID_{{line_index}}_>{{auth_name}}</Auth_ID_{{line_index}}_>
+<Password_{{line_index}}_>{{password}}</Password_{{line_index}}_>
+
+{{#has_outbound_proxy}}
+<Outbound_Proxy_{{line_index}}_>{{outbound_proxy_host}}</Outbound_Proxy_{{line_index}}_>
+{{/has_outbound_proxy}}
+{{#has_backup_server}}
+<Alternate_Proxy_{{line_index}}_>{{backup_server}}</Alternate_Proxy_{{line_index}}_>
+{{/has_backup_server}}
+{{#has_voicemail}}
+<Voice_Mail_Server_{{line_index}}_>{{voicemail_number}}</Voice_Mail_Server_{{line_index}}_>
+{{/has_voicemail}}
+{{/has_sip_server}}
+{{^has_sip_server}}
+<!-- DMS mode: Line disabled – DMS server will provide SIP credentials -->
+<Line_Enable_{{line_index}}_>No</Line_Enable_{{line_index}}_>
+<Register_{{line_index}}_>No</Register_{{line_index}}_>
+{{/has_sip_server}}
+{{/lines}}
+
+<!-- Call Features -->
+{{#has_auto_answer}}
+<Auto_Answer_Page>{{#is_auto_answer}}Yes{{/is_auto_answer}}{{^is_auto_answer}}No{{/is_auto_answer}}</Auto_Answer_Page>
+{{/has_auto_answer}}
+{{#has_dnd}}
+<DND_Enable_1_>{{#is_dnd_enabled}}Yes{{/is_dnd_enabled}}{{^is_dnd_enabled}}No{{/is_dnd_enabled}}</DND_Enable_1_>
+{{/has_dnd}}
+{{#has_call_waiting}}
+<CW_Setting_1_>{{#is_call_waiting}}Yes{{/is_call_waiting}}{{^is_call_waiting}}No{{/is_call_waiting}}</CW_Setting_1_>
+{{/has_call_waiting}}
+
+{{#has_dial_plan}}
+<!-- Dial Plan -->
+<Dial_Plan_1_>{{dial_plan}}</Dial_Plan_1_>
+{{/has_dial_plan}}
+
+{{#has_screensaver_timeout}}
+<!-- Screen Saver -->
+<Screen_Saver_Enable>Yes</Screen_Saver_Enable>
+<Screen_Saver_Wait>{{screensaver_timeout}}</Screen_Saver_Wait>
+{{/has_screensaver_timeout}}
+
+{{#wallpaper_url}}
+<!-- Background Image -->
+<Background_Image>{{wallpaper_url}}</Background_Image>
+{{/wallpaper_url}}
+
+{{#has_custom_ringtone}}
+<!-- Custom Ringtone -->
+<Ring1>n=Custom;w={{ringtone_url}};c=1</Ring1>
+<Default_Ring_1_>1</Default_Ring_1_>
+{{/has_custom_ringtone}}
+
+{{#line_keys}}
+<!-- Programmable Line Key {{position}} -->
+<Extension_{{position}}_>{{position}}</Extension_{{position}}_>
+<Short_Name_{{position}}_>{{key_label}}</Short_Name_{{position}}_>
+<Extended_Function_{{position}}_>fnc=sd;ext={{key_value}}@{{sip_server}};nme={{key_label}}</Extended_Function_{{position}}_>
+{{/line_keys}}
+
+{{#remote_phonebooks}}
+<!-- XML Directory -->
+<XML_Directory_Service_Name>{{name}}</XML_Directory_Service_Name>
+<XML_Directory_Service_URL>{{url}}</XML_Directory_Service_URL>
+{{/remote_phonebooks}}
+</flat-profile>

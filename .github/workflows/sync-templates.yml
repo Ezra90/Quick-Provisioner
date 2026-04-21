@@ -1,0 +1,131 @@
+name: Sync Shared Templates
+
+on:
+  # Run when templates change on main (both possible paths)
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - 'templates/**'
+      - 'assets/templates/**'
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      direction:
+        description: 'Sync direction'
+        required: true
+        default: 'push'
+        type: choice
+        options:
+          - push
+          - pull
+  # Allow other repos to trigger via repository_dispatch
+  repository_dispatch:
+    types: [ template-sync ]
+  # Scheduled sync weekly
+  schedule:
+    - cron: '0 3 * * 1'   # Every Monday at 03:00 UTC
+
+jobs:
+  sync-templates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate sync token
+        run: |
+          TOKEN="${{ secrets.TEMPLATE_SYNC_TOKEN }}"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::TEMPLATE_SYNC_TOKEN secret is not configured."
+            echo "::error::Create a Personal Access Token (classic) with 'repo' scope at https://github.com/settings/tokens"
+            echo "::error::Then add it as a repository secret named TEMPLATE_SYNC_TOKEN in both repos."
+            exit 1
+          fi
+          if [[ "$TOKEN" != ghp_* ]] && [[ "$TOKEN" != github_pat_* ]]; then
+            echo "::error::TEMPLATE_SYNC_TOKEN does not look like a valid GitHub Personal Access Token."
+            echo "::error::Classic tokens start with 'ghp_' and fine-grained tokens start with 'github_pat_'."
+            echo "::error::Generate a new token at https://github.com/settings/tokens with 'repo' scope and update the secret."
+            exit 1
+          fi
+
+      - name: Detect repo and configure paths
+        id: config
+        run: |
+          if [ "${{ github.repository }}" = "Ezra90/Quick-Provisioner" ]; then
+            echo "this_checkout=Quick-Provisioner" >> "$GITHUB_OUTPUT"
+            echo "this_template_dir=templates" >> "$GITHUB_OUTPUT"
+            echo "other_repo=Ezra90/Pocket-Provisioner" >> "$GITHUB_OUTPUT"
+            echo "other_checkout=Pocket-Provisioner" >> "$GITHUB_OUTPUT"
+            echo "other_template_dir=assets/templates" >> "$GITHUB_OUTPUT"
+          else
+            echo "this_checkout=Pocket-Provisioner" >> "$GITHUB_OUTPUT"
+            echo "this_template_dir=assets/templates" >> "$GITHUB_OUTPUT"
+            echo "other_repo=Ezra90/Quick-Provisioner" >> "$GITHUB_OUTPUT"
+            echo "other_checkout=Quick-Provisioner" >> "$GITHUB_OUTPUT"
+            echo "other_template_dir=templates" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: ${{ steps.config.outputs.this_checkout }}
+
+      - name: Checkout other repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.config.outputs.other_repo }}
+          path: ${{ steps.config.outputs.other_checkout }}
+          token: ${{ secrets.TEMPLATE_SYNC_TOKEN }}
+
+      - name: Determine sync direction
+        id: direction
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dir=${{ github.event.inputs.direction }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "dir=pull" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=push" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync templates
+        run: |
+          DIRECTION="${{ steps.direction.outputs.dir }}"
+          THIS_DIR="${{ steps.config.outputs.this_checkout }}/${{ steps.config.outputs.this_template_dir }}"
+          OTHER_DIR="${{ steps.config.outputs.other_checkout }}/${{ steps.config.outputs.other_template_dir }}"
+
+          if [ "$DIRECTION" = "push" ]; then
+            echo "Pushing templates from ${{ github.repository }} → ${{ steps.config.outputs.other_repo }}"
+            cp "$THIS_DIR"/*.mustache "$OTHER_DIR"/
+          else
+            echo "Pulling templates from ${{ steps.config.outputs.other_repo }} → ${{ github.repository }}"
+            cp "$OTHER_DIR"/*.mustache "$THIS_DIR"/
+          fi
+
+      - name: Push to other repo
+        if: ${{ steps.direction.outputs.dir != 'pull' }}
+        working-directory: ${{ steps.config.outputs.other_checkout }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ steps.config.outputs.other_template_dir }}/
+          if git diff --cached --quiet; then
+            echo "No template changes to sync"
+          else
+            git commit -m "sync: update shared templates from ${{ github.repository }}"
+            git push
+          fi
+
+      - name: Push to this repo
+        if: ${{ steps.direction.outputs.dir == 'pull' }}
+        working-directory: ${{ steps.config.outputs.this_checkout }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ steps.config.outputs.this_template_dir }}/
+          if git diff --cached --quiet; then
+            echo "No template changes to sync"
+          else
+            git commit -m "sync: update shared templates from ${{ steps.config.outputs.other_repo }}"
+            git push
+          fi

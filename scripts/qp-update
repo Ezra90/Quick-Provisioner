@@ -1,0 +1,79 @@
+#!/bin/bash
+# qp-update - Quick-Provisioner Update Script
+# Install to /usr/local/bin/qp-update with: sudo cp scripts/qp-update /usr/local/bin/ && sudo chmod +x /usr/local/bin/qp-update
+# Usage: sudo qp-update
+
+set -e  # Exit on error
+set -u  # Exit on undefined variable
+
+MODULE_DIR="/var/www/html/admin/modules/quickprovisioner"
+WEB_USER="asterisk"
+WEB_GROUP="asterisk"
+
+echo "========================================"
+echo " Quick-Provisioner - Update Script"
+echo "========================================"
+
+cd "$MODULE_DIR" || exit 1
+
+CURRENT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+echo "Current commit: $CURRENT_COMMIT"
+
+echo ""
+echo "Fetching updates from GitHub..."
+git fetch origin 2>&1
+
+LOCAL=$(git rev-parse HEAD 2>/dev/null || echo "")
+REMOTE=$(git rev-parse origin/main 2>/dev/null || git rev-parse origin/master 2>/dev/null || echo "")
+
+UPDATES_APPLIED=0
+
+if [ -z "$LOCAL" ] || [ -z "$REMOTE" ]; then
+    echo "Error: Could not determine commit hashes"
+    exit 1
+fi
+
+if [ "$LOCAL" = "$REMOTE" ]; then
+    echo "Already up to date!"
+else
+    echo "Pulling updates..."
+    git pull origin main 2>&1 || git pull origin master 2>&1
+    NEW_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    echo "Updated: $CURRENT_COMMIT -> $NEW_COMMIT"
+    UPDATES_APPLIED=1
+fi
+
+echo ""
+echo "Fixing permissions..."
+chown -R "$WEB_USER:$WEB_GROUP" "$MODULE_DIR"
+find "$MODULE_DIR" -type f -exec chmod 0664 {} \;
+find "$MODULE_DIR" -type d -exec chmod 0775 {} \;
+
+# Ensure asset directories exist and have correct permissions
+for dir in templates assets assets/uploads assets/ringtones assets/firmware assets/phonebook; do
+    target="$MODULE_DIR/$dir"
+    mkdir -p "$target" 2>/dev/null || true
+    chmod 0775 "$target" 2>/dev/null || true
+    chown "$WEB_USER:$WEB_GROUP" "$target" 2>/dev/null || true
+done
+
+VERSION=$(grep -oP '(?<=<version>)[^<]+' "$MODULE_DIR/module.xml" 2>/dev/null | head -1 || echo "unknown")
+
+if [ "$UPDATES_APPLIED" -eq 1 ]; then
+    echo ""
+    echo "Running FreePBX chown to fix all file permissions..."
+    fwconsole chown || echo "Warning: fwconsole chown failed"
+    echo ""
+    echo "Reloading FreePBX..."
+    if fwconsole reload; then
+        echo "FreePBX reloaded successfully."
+    else
+        echo "Warning: FreePBX reload failed. Please reload manually."
+    fi
+    echo ""
+fi
+
+echo ""
+echo "========================================"
+echo " Done! Version: $VERSION"
+echo "========================================"
