@@ -1,7 +1,7 @@
 <module>
     <rawname>quickprovisioner</rawname>
     <name>Quick-Provisioner</name>
-    <version>0.1.6</version>
+    <version>0.1.7</version>
     <publisher>Ezra90</publisher>
     <license>MIT</license>
     <type>tool</type>

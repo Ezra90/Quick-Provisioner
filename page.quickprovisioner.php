@@ -213,6 +213,17 @@ $csrf_token = $_SESSION['qp_csrf'];
 
                                     <!-- Settings Sub-Tab -->
                                     <div id="sub-settings" class="tab-pane fade in active">
+                                        <div class="btn-toolbar" style="margin-bottom:12px;" id="settingsToolbar" hidden>
+                                            <div class="btn-group">
+                                                <button type="button" class="btn btn-default btn-sm" onclick="loadTemplateExamples('empty')" title="Fill empty fields from template examples"><i class="fa fa-magic"></i> Load Examples</button>
+                                                <button type="button" class="btn btn-default btn-sm" onclick="loadTemplateExamples('all')" title="Overwrite all fields with template examples"><i class="fa fa-refresh"></i> Reload Examples</button>
+                                                <button type="button" class="btn btn-default btn-sm" onclick="loadTemplateDefaults()" title="Reset fields to template defaults"><i class="fa fa-undo"></i> Apply Defaults</button>
+                                            </div>
+                                            <div class="btn-group">
+                                                <button type="button" class="btn btn-info btn-sm" onclick="loadSamplePreset()" title="Load demo button layout from template sample_preset"><i class="fa fa-th"></i> Load Sample Buttons</button>
+                                            </div>
+                                        </div>
+                                        <p class="text-muted" id="samplePresetNote" style="display:none; margin-top:-4px;"></p>
                                         <div id="deviceOptions"><p class="text-muted">Select a model to view settings.</p></div>
                                     </div>
 
@@ -452,6 +463,11 @@ $csrf_token = $_SESSION['qp_csrf'];
             <option value="line">Line</option>
             <option value="speed_dial">Speed Dial</option>
             <option value="blf">BLF</option>
+            <option value="voicemail">Voicemail</option>
+            <option value="transfer">Transfer</option>
+            <option value="pickup">Pickup</option>
+            <option value="park">Park / BLF Park</option>
+            <option value="dtmf">DTMF</option>
           </select>
         </div>
         <div class="form-group" id="keyExtPickGroup">
@@ -470,6 +486,18 @@ $csrf_token = $_SESSION['qp_csrf'];
         <div class="form-group">
           <label>Value <small class="text-muted">(extension / number dialled)</small></label>
           <input type="text" id="keyValue" class="form-control" placeholder="e.g. 101">
+        </div>
+        <div class="form-group" id="keyShortDialGroup">
+          <label>Short Dial</label>
+          <select id="keyShortDial" class="form-control">
+            <option value="full">Full — use complete number</option>
+            <option value="3digit">3-digit — last 3 digits</option>
+            <option value="4digit">4-digit — last 4 digits</option>
+            <option value="5digit">5-digit — last 5 digits</option>
+            <option value="custom">Custom — specify digits</option>
+          </select>
+          <input type="number" id="keyCustomDigits" class="form-control" min="1" max="20" value="4" style="margin-top:6px; display:none;" placeholder="Trailing digits to keep">
+          <small class="text-muted" id="keyShortDialPreview"></small>
         </div>
         <div class="form-group">
           <label>Label <small class="text-muted">(shown on the phone button)</small></label>
@@ -711,9 +739,18 @@ function loadDeviceOptions() {
     var p = profiles[model];
     var html = '';
     if (!p || !p.variables || p.variables.length === 0) {
+        $('#settingsToolbar').attr('hidden', true);
+        $('#samplePresetNote').hide();
         $('#deviceOptions').html('<p class="text-muted">No configurable settings in this template.</p>');
         return;
     }
+    $('#settingsToolbar').removeAttr('hidden');
+    if (p.sample_preset && p.sample_preset.label) {
+        $('#samplePresetNote').text('Sample preset: ' + p.sample_preset.label + (p.sample_preset.notes ? ' — ' + p.sample_preset.notes : '')).show();
+    } else {
+        $('#samplePresetNote').hide();
+    }
+
     // Build category lookup
     var catDefs = {}, catOrder = [];
     if (p.categories && p.categories.length) {
@@ -727,6 +764,15 @@ function loadDeviceOptions() {
         cats[c].push(v);
     });
     Object.keys(cats).forEach(function(c) { if (catOrder.indexOf(c) === -1) catOrder.push(c); });
+
+    var boolVars = {
+        auto_answer:1, dnd_enabled:1, call_waiting:1, web_ui_enabled:1,
+        cdp_lldp_enabled:1, dst_enable:1
+    };
+    var selectVars = {
+        transport: ['UDP','TCP','TLS','DNS-SRV'],
+        debug_level_cisco: ['EMERGENCY','ALERT','CRITICAL','ERROR','WARNING','NOTICE','INFO','DEBUG']
+    };
 
     catOrder.forEach(function(cat) {
         if (!cats[cat]) return;
@@ -742,11 +788,50 @@ function loadDeviceOptions() {
         html += '<div id="' + cid + '" class="panel-collapse collapse in"><div class="panel-body">';
 
         cats[cat].forEach(function(v) {
+            var name = v.name;
             var ph = v.example ? v.example : (v.default ? 'Default: ' + v.default : '');
-            html += '<div class="form-group">';
-            html += '<label>' + esc(v.name) + '</label>';
-            html += '<input type="text" name="custom_options[' + esc(v.name) + ']" class="form-control" placeholder="' + esc(ph) + '" value="' + esc(v.default || '') + '">';
-            if (v.description) html += '<small class="help-block text-muted">' + esc(v.description) + '</small>';
+            var defVal = v.default || '';
+            html += '<div class="form-group" data-var="' + esc(name) + '">';
+            html += '<label>' + esc(name);
+            if (v.example) {
+                html += ' <button type="button" class="btn btn-link btn-xs qp-load-one-example" data-var="' + esc(name) + '" title="Load example: ' + esc(v.example) + '">example</button>';
+            }
+            html += '</label>';
+
+            // Cisco Yes/No style bools
+            var isCiscoBool = (defVal === 'Yes' || defVal === 'No' || v.example === 'Yes' || v.example === 'No');
+            if (boolVars[name] && !isCiscoBool) {
+                html += '<select name="custom_options[' + esc(name) + ']" class="form-control">';
+                html += '<option value="1"' + (defVal === '1' ? ' selected' : '') + '>Enabled (1)</option>';
+                html += '<option value="0"' + (defVal !== '1' ? ' selected' : '') + '>Disabled (0)</option>';
+                html += '</select>';
+            } else if (boolVars[name] && isCiscoBool) {
+                html += '<select name="custom_options[' + esc(name) + ']" class="form-control">';
+                html += '<option value="Yes"' + (defVal === 'Yes' ? ' selected' : '') + '>Yes</option>';
+                html += '<option value="No"' + (defVal !== 'Yes' ? ' selected' : '') + '>No</option>';
+                html += '</select>';
+            } else if (name === 'transport') {
+                html += '<select name="custom_options[' + esc(name) + ']" class="form-control">';
+                selectVars.transport.forEach(function(opt) {
+                    html += '<option value="' + opt + '"' + (defVal === opt ? ' selected' : '') + '>' + opt + '</option>';
+                });
+                html += '</select>';
+            } else if (name === 'ringtone_url' || name === 'firmware_url') {
+                html += '<div class="input-group">';
+                html += '<input type="text" name="custom_options[' + esc(name) + ']" class="form-control" placeholder="' + esc(ph) + '" value="' + esc(defVal) + '">';
+                html += '<span class="input-group-btn"><button type="button" class="btn btn-default qp-pick-asset" data-var="' + esc(name) + '" data-kind="' + (name === 'ringtone_url' ? 'ringtone' : 'firmware') + '"><i class="fa fa-folder-open"></i></button></span>';
+                html += '</div>';
+            } else {
+                html += '<input type="text" name="custom_options[' + esc(name) + ']" class="form-control" placeholder="' + esc(ph) + '" value="' + esc(defVal) + '">';
+            }
+
+            if (v.description) {
+                html += '<small class="help-block text-muted">' + esc(v.description);
+                if (v.example) html += ' <em>(e.g. ' + esc(v.example) + ')</em>';
+                html += '</small>';
+            } else if (v.example) {
+                html += '<small class="help-block text-muted">Example: ' + esc(v.example) + '</small>';
+            }
             html += '</div>';
         });
 
@@ -754,6 +839,86 @@ function loadDeviceOptions() {
     });
     $('#deviceOptions').html(html);
 }
+
+function _setCustomOption(name, value) {
+    var $el = $('[name="custom_options[' + name + ']"]');
+    if ($el.length) $el.val(value);
+}
+
+function loadTemplateExamples(mode, silent) {
+    var model = $('#model').val(), p = profiles[model];
+    if (!p || !p.variables) return 0;
+    var filled = 0;
+    p.variables.forEach(function(v) {
+        var val = v.example || '';
+        if (!val) return;
+        var $el = $('[name="custom_options[' + v.name + ']"]');
+        if (!$el.length) return;
+        if (mode === 'empty' && $.trim($el.val())) return;
+        $el.val(val);
+        filled++;
+    });
+    if (!silent) {
+        alert(filled ? ('Loaded ' + filled + ' example value(s).') : 'No example values available (or all fields already filled).');
+    }
+    return filled;
+}
+
+function loadTemplateDefaults() {
+    var model = $('#model').val(), p = profiles[model];
+    if (!p || !p.variables) return;
+    p.variables.forEach(function(v) {
+        _setCustomOption(v.name, v.default || '');
+    });
+}
+
+function loadSamplePreset() {
+    var model = $('#model').val(), p = profiles[model];
+    if (!p || !p.sample_preset || !p.sample_preset.buttons) {
+        alert('This template has no sample_preset.buttons yet.');
+        return;
+    }
+    if (currentKeys.length && !confirm('Replace current button layout with the sample preset?')) return;
+    currentKeys = p.sample_preset.buttons.map(function(b) {
+        return {
+            index: b.index,
+            type: b.type || 'blf',
+            value: b.value || '',
+            full_value: b.value || '',
+            label: b.label || '',
+            short_dial_mode: b.short_dial_mode || 'full',
+            custom_digits: b.custom_digits || 4
+        };
+    });
+    // Also load setting examples into empty fields
+    loadTemplateExamples('empty', true);
+    renderPreview();
+    alert('Loaded sample buttons' + (p.sample_preset.label ? (': ' + p.sample_preset.label) : '') + '. Review Settings and Save Device when ready.');
+}
+
+$(document).on('click', '.qp-load-one-example', function() {
+    var name = $(this).data('var');
+    var model = $('#model').val(), p = profiles[model];
+    if (!p || !p.variables) return;
+    var v = p.variables.find(function(x){ return x.name === name; });
+    if (v && v.example) _setCustomOption(name, v.example);
+});
+
+$(document).on('click', '.qp-pick-asset', function() {
+    var kind = $(this).data('kind');
+    var varName = $(this).data('var');
+    var cmd = kind === 'ringtone' ? 'list_ringtones' : 'list_firmware';
+    ajax(cmd, {}, function(r) {
+        if (!r.status) { alert(r.message || 'Failed to list files'); return; }
+        var items = r.files || r.list || [];
+        if (!items.length) { alert('No ' + kind + ' files uploaded yet. Use the File Manager tab first.'); return; }
+        var names = items.map(function(it){ return (typeof it === 'string') ? it : (it.filename || it.name); });
+        var pick = prompt('Enter filename to use:\n\n' + names.join('\n'), names[0]);
+        if (!pick) return;
+        // Relative media URL works with module media.php / auth
+        _setCustomOption(varName, 'media.php?file=' + encodeURIComponent(pick));
+    });
+});
 
 // ===================== EXTENSION & SECRET =====================
 function extSelChanged() {
@@ -1028,23 +1193,75 @@ function renderPreview() {
     }
 }
 
+function qpComputeShortDial(full, mode, customDigits) {
+    full = String(full || '');
+    if (!full) return '';
+    var digits = 0;
+    if (mode === '3digit') digits = 3;
+    else if (mode === '4digit') digits = 4;
+    else if (mode === '5digit') digits = 5;
+    else if (mode === 'custom') digits = parseInt(customDigits, 10) || 0;
+    else return full;
+    if (digits <= 0) return full;
+    return full.length > digits ? full.slice(-digits) : full;
+}
+
+function updateKeyShortDialUi() {
+    var mode = $('#keyShortDial').val() || 'full';
+    $('#keyCustomDigits').toggle(mode === 'custom');
+    var full = $.trim($('#keyValue').val());
+    var dig = parseInt($('#keyCustomDigits').val(), 10) || 4;
+    var eff = qpComputeShortDial(full, mode, dig);
+    $('#keyShortDialPreview').text(mode === 'full' || !full ? '' : ('Config will dial: ' + eff));
+}
+
 function editKey(idx) {
     $('#keyIndex').text(idx);
     var k = currentKeys.find(function(x){return x.index===idx;}) || {};
     keyLabelCustomised = !!(k.label && String(k.label).length);
-    $('#keyType').val(k.type||'line');
-    $('#keyValue').val(k.value||'');
+    var t = k.type || 'line';
+    if (t === 'speeddial') t = 'speed_dial';
+    $('#keyType').val(t);
+    var full = k.full_value || k.fullValue || k.value || '';
+    $('#keyValue').val(full);
     $('#keyLabel').val(k.label||'');
+    $('#keyShortDial').val(k.short_dial_mode || k.shortDialMode || 'full');
+    $('#keyCustomDigits').val(k.custom_digits || k.customDigits || 4);
     populateKeyExtSelect();
     syncKeyExtSelectFromValue();
     updateKeyExtUi();
     updateKeyLabelHint();
+    updateKeyShortDialUi();
     $('#keyModal').modal('show');
 }
 function saveKey() {
-    var idx = parseInt($('#keyIndex').text()), t=$('#keyType').val(), v=$.trim($('#keyValue').val()), l=$.trim($('#keyLabel').val());
+    var idx = parseInt($('#keyIndex').text());
+    var t = $('#keyType').val();
+    var full = $.trim($('#keyValue').val());
+    var l = $.trim($('#keyLabel').val());
+    var mode = $('#keyShortDial').val() || 'full';
+    var dig = parseInt($('#keyCustomDigits').val(), 10) || 4;
+    var v = qpComputeShortDial(full, mode, dig);
+    var payload = {
+        index: idx,
+        type: t,
+        value: v,
+        full_value: full,
+        label: l,
+        short_dial_mode: mode,
+        custom_digits: dig
+    };
     var ex = currentKeys.find(function(k){return k.index===idx;});
-    if (ex) { ex.type=t; ex.value=v; ex.label=l; } else currentKeys.push({index:idx, type:t, value:v, label:l});
+    if (ex) {
+        ex.type = payload.type;
+        ex.value = payload.value;
+        ex.full_value = payload.full_value;
+        ex.label = payload.label;
+        ex.short_dial_mode = payload.short_dial_mode;
+        ex.custom_digits = payload.custom_digits;
+    } else {
+        currentKeys.push(payload);
+    }
     renderPreview(); $('#keyModal').modal('hide');
 }
 function clearKey() {
@@ -1090,9 +1307,9 @@ function syncKeyExtSelectFromValue() {
 
 function updateKeyExtUi() {
     var t = $('#keyType').val();
-    // Extension picker is most useful for BLF / speed dial; still available for line
-    var show = (t === 'blf' || t === 'speed_dial' || t === 'line');
+    var show = (t === 'blf' || t === 'speed_dial' || t === 'line' || t === 'transfer' || t === 'pickup' || t === 'park' || t === 'voicemail');
     $('#keyExtPickGroup').toggle(!!show);
+    $('#keyShortDialGroup').toggle(t !== 'line');
 }
 
 function updateKeyLabelHint() {
@@ -1143,6 +1360,7 @@ function refreshKeyFreepbxExtensions(cb) {
 
 $(document).on('change', '#keyType', function() {
     updateKeyExtUi();
+    updateKeyShortDialUi();
 });
 $(document).on('change', '#keyExtSelect', function() {
     applyKeyExtSelection();
@@ -1150,6 +1368,10 @@ $(document).on('change', '#keyExtSelect', function() {
 $(document).on('input', '#keyValue', function() {
     syncKeyExtSelectFromValue();
     updateKeyLabelHint();
+    updateKeyShortDialUi();
+});
+$(document).on('change input', '#keyShortDial, #keyCustomDigits', function() {
+    updateKeyShortDialUi();
 });
 $(document).on('input', '#keyLabel', function() {
     keyLabelCustomised = true;

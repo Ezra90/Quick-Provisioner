@@ -40,6 +40,7 @@ function qp_parse_template_meta($source) {
         'categories'       => $meta['categories'] ?? [],
         'variables'        => $meta['variables'] ?? [],
         'visual_editor'    => $meta['visual_editor'] ?? null,
+        'sample_preset'    => $meta['sample_preset'] ?? null,
     ];
 }
 
@@ -293,6 +294,34 @@ function _qp_brand_fallback_template($model) {
 }
 
 /**
+ * Apply Pocket-compatible short-dial shortening to a dialled number.
+ *
+ * @param string $full
+ * @param string $mode  full|3digit|4digit|5digit|custom
+ * @param int    $customDigits
+ * @return string
+ */
+function qp_apply_short_dial($full, $mode = 'full', $customDigits = 0) {
+    $full = (string)$full;
+    if ($full === '') {
+        return '';
+    }
+    $digits = 0;
+    switch ($mode) {
+        case '3digit': $digits = 3; break;
+        case '4digit': $digits = 4; break;
+        case '5digit': $digits = 5; break;
+        case 'custom': $digits = max(0, (int)$customDigits); break;
+        default: return $full;
+    }
+    if ($digits <= 0) {
+        return $full;
+    }
+    $len = strlen($full);
+    return $len > $digits ? substr($full, -$digits) : $full;
+}
+
+/**
  * Build the Mustache variable context for provisioning a device.
  *
  * Mirrors the Pocket-Provisioner MustacheRenderer.buildVariables() format so
@@ -424,9 +453,20 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
 
     foreach ($keys as $k) {
         $rawType    = $k['type'] ?? 'line';
-        $typeCode   = $typeMapping[$rawType] ?? $rawType;
+        // Normalize Pocket-style type aliases
+        if ($rawType === 'speeddial') {
+            $rawType = 'speed_dial';
+        }
+        $typeCode   = $typeMapping[$rawType] ?? ($typeMapping[str_replace('_', '', $rawType)] ?? $rawType);
+        // Yealink type_mapping uses speed_dial; also try without underscore
+        if (!isset($typeMapping[$rawType]) && $rawType === 'speed_dial' && isset($typeMapping['speeddial'])) {
+            $typeCode = $typeMapping['speeddial'];
+        }
         $position   = $k['index'] ?? 1; // index is already 1-based; do not add 1
-        $keyValue   = $k['value'] ?? '';
+        $fullValue  = (string)($k['full_value'] ?? $k['fullValue'] ?? $k['value'] ?? '');
+        $shortMode  = (string)($k['short_dial_mode'] ?? $k['shortDialMode'] ?? 'full');
+        $customDig  = (int)($k['custom_digits'] ?? $k['customDigits'] ?? 0);
+        $keyValue   = qp_apply_short_dial($fullValue, $shortMode, $customDig);
         $keyLabel   = $k['label'] ?? '';
         $keyLine    = $k['line'] ?? 1;
         $pickupCode = $k['pickup_code'] ?? '';
@@ -441,6 +481,8 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
             'pickup_code' => $pickupCode,
             'sip_server'  => $sipServer,
             'is_blf'      => ($rawType === 'blf'),
+            'full_value'  => $fullValue,
+            'short_dial_mode' => $shortMode,
         ];
 
         if ($position <= $maxLineKeys || $maxLineKeys === 0) {
