@@ -32,8 +32,9 @@ if (!$authorized && isset($_SESSION['AMP_user']) && is_object($_SESSION['AMP_use
 
 // Check per-device provisioning auth for remote requests
 if (!$authorized && $mac && isset($_SERVER['PHP_AUTH_USER'])) {
-    global $db;
-    $device = $db->getRow("SELECT prov_username, prov_password FROM quickprovisioner_devices WHERE mac=?", [$mac]);
+    $stmt = \FreePBX::Database()->prepare("SELECT prov_username, prov_password FROM quickprovisioner_devices WHERE mac=?");
+    $stmt->execute([$mac]);
+    $device = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($device && !empty($device['prov_username']) && !empty($device['prov_password'])) {
         if ($_SERVER['PHP_AUTH_USER'] === $device['prov_username'] && ($_SERVER['PHP_AUTH_PW'] ?? '') === $device['prov_password']) {
             $authorized = true;
@@ -65,9 +66,10 @@ if (!file_exists($path) || empty($file)) {
 }
 
 if ($mac && ($req_w == 0 || $req_h == 0)) {
-    global $db;
     require_once __DIR__ . '/MustacheEngine.php';
-    $device = $db->getRow("SELECT model FROM quickprovisioner_devices WHERE mac=?", [$mac]);
+    $stmt = \FreePBX::Database()->prepare("SELECT model FROM quickprovisioner_devices WHERE mac=?");
+    $stmt->execute([$mac]);
+    $device = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($device) {
         $model = basename($device['model']);
         $template_file = qp_resolve_template_file($model, __DIR__ . '/templates');

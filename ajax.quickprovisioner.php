@@ -37,6 +37,20 @@ if (!defined('FREEPBX_IS_AUTH') || !FREEPBX_IS_AUTH) {
 }
 
 global $db;
+// FreePBX 17: prefer PDO Database. global $db may be legacy PEAR DB or FreePBX\Database.
+if (!function_exists('qp_pdo')) {
+    function qp_pdo(): \PDO {
+        return \FreePBX::Database();
+    }
+}
+if (!function_exists('qp_db_exec')) {
+    /** @return \PDOStatement */
+    function qp_db_exec(string $sql, array $params = []): \PDOStatement {
+        $stmt = qp_pdo()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt;
+    }
+}
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -155,7 +169,7 @@ switch ($action) {
                 $sql = "INSERT INTO quickprovisioner_devices (mac, model, extension, wallpaper, wallpaper_mode, security_pin, keys_json, contacts_json, custom_options_json, custom_template_override, prov_username, prov_password, custom_sip_secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
                 $params = [$form['mac'], $form['model'], $form['extension'], $wallpaper, $wallpaper_mode, $security_pin, $keys_json, $contacts_json, $custom_options_json, $custom_template_override, $prov_username, $prov_password, $custom_sip_secret];
             }
-            $db->query($sql, $params);
+            qp_db_exec($sql, $params);
             \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device saved: MAC=" . $form['mac']);
             $response = ['status' => true];
         } catch (Exception $e) {
@@ -167,17 +181,17 @@ switch ($action) {
     case 'get_device':
         $id = $_REQUEST['id'] ?? null;
         if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
-        $row = $db->getRow("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id]);
+        $row = qp_db_exec("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id])->fetch(PDO::FETCH_ASSOC);
         $response = ['status' => true, 'data' => $row ?: null];
         break;
 
     case 'list_devices':
-        $rows = $db->query("SELECT * FROM quickprovisioner_devices ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+        $rows = qp_pdo()->query("SELECT * FROM quickprovisioner_devices ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
         $response = ['status' => true, 'devices' => $rows];
         break;
 
     case 'list_devices_with_secrets':
-        $rows = $db->query("SELECT * FROM quickprovisioner_devices ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+        $rows = qp_pdo()->query("SELECT * FROM quickprovisioner_devices ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
         $devices = [];
         foreach ($rows as $row) {
             $ext = $row['extension'];
@@ -218,7 +232,7 @@ switch ($action) {
     case 'delete_device':
         $id = $_REQUEST['id'] ?? null;
         if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
-        $stmt = $db->query("DELETE FROM quickprovisioner_devices WHERE id=?", [(int)$id]);
+        $stmt = qp_db_exec("DELETE FROM quickprovisioner_devices WHERE id=?", [(int)$id]);
         if ($stmt->rowCount() > 0) {
             \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device deleted: ID=$id");
             $response = ['status' => true];
@@ -230,7 +244,7 @@ switch ($action) {
     case 'preview_config':
         $id = $_REQUEST['id'] ?? null;
         if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
-        $device = $db->getRow("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id]);
+        $device = qp_db_exec("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id])->fetch(PDO::FETCH_ASSOC);
         if (!$device) { $response['message'] = 'Device not found'; break; }
         $model = basename($device['model']); // Sanitize to prevent path traversal
 
@@ -949,7 +963,7 @@ switch ($action) {
     // === ACCESS LOG ACTIONS ===
     case 'list_access_log':
         $limit = min(200, max(1, (int)($_REQUEST['limit'] ?? 50)));
-        $rows = $db->query(
+        $rows = qp_db_exec(
             "SELECT * FROM quickprovisioner_access_log ORDER BY id DESC LIMIT ?",
             [$limit]
         )->fetchAll(PDO::FETCH_ASSOC);
@@ -957,7 +971,7 @@ switch ($action) {
         break;
 
     case 'clear_access_log':
-        $db->query("TRUNCATE TABLE quickprovisioner_access_log");
+        qp_pdo()->query("TRUNCATE TABLE quickprovisioner_access_log");
         $response = ['status' => true, 'message' => 'Access log cleared'];
         break;
 }

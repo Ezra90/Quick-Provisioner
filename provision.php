@@ -15,21 +15,21 @@ if (!function_exists('qp_is_local_network')) {
 }
 
 function qp_log_access($status_code, $path, $mac, $extension, $resource_type) {
-    global $db;
     try {
-        $db->query(
-            "INSERT INTO quickprovisioner_access_log (status_code, method, path, client_ip, mac, extension, resource_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [
-                $status_code,
-                $_SERVER['REQUEST_METHOD'] ?? 'GET',
-                substr($path, 0, 255),
-                $_SERVER['REMOTE_ADDR'] ?? '',
-                $mac,
-                $extension,
-                $resource_type,
-                substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255)
-            ]
+        // FreePBX 17 Database::query() no longer accepts bound params as arg #2
+        $stmt = \FreePBX::Database()->prepare(
+            "INSERT INTO quickprovisioner_access_log (status_code, method, path, client_ip, mac, extension, resource_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         );
+        $stmt->execute([
+            $status_code,
+            $_SERVER['REQUEST_METHOD'] ?? 'GET',
+            substr($path, 0, 255),
+            $_SERVER['REMOTE_ADDR'] ?? '',
+            $mac,
+            $extension,
+            $resource_type,
+            substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255)
+        ]);
     } catch (Exception $e) {
         // Don't let log failures break provisioning
     }
@@ -107,8 +107,9 @@ if (!$mac || strlen($mac) !== 12 || !ctype_xdigit($mac)) {
     die("Invalid or no MAC provided");
 }
 
-global $db;
-$device = $db->getRow("SELECT * FROM quickprovisioner_devices WHERE mac=?", [$mac]);
+$stmt = \FreePBX::Database()->prepare("SELECT * FROM quickprovisioner_devices WHERE mac=?");
+$stmt->execute([$mac]);
+$device = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$device) {
     \FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Device not found for MAC: $mac");
     http_response_code(404);

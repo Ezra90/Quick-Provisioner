@@ -43,7 +43,7 @@ if (!isset($_SESSION['qp_csrf'])) {
 $csrf_token = $_SESSION['qp_csrf'];
 ?>
 <div class="container-fluid">
-    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1-dev</small></h1>
+    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.1</small></h1>
 
     <ul class="nav nav-tabs" role="tablist">
         <li class="active"><a data-toggle="tab" href="#tab-devices" onclick="loadDevices()">Devices</a></li>
@@ -363,7 +363,7 @@ $csrf_token = $_SESSION['qp_csrf'];
                     <div class="panel panel-info">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-cloud-download"></i> Module Updates</h3></div>
                         <div class="panel-body">
-                            <p><strong>Version:</strong> <span id="currentVersion">0.1-dev</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
+                            <p><strong>Version:</strong> <span id="currentVersion">0.1.1</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
                             <button class="btn btn-primary" onclick="checkForUpdates()" id="checkUpdatesBtn"><i class="fa fa-search"></i> Check for Updates</button>
                             <div id="updateStatus" style="margin-top:15px; display:none;">
                                 <div id="updateMsg"></div>
