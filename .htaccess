@@ -1,12 +1,12 @@
 # Quick-Provisioner — allow handset-facing endpoints under /admin/
 # FreePBX admin/.htaccess only grants config.php/ajax.php by default.
 <IfModule mod_authz_core.c>
-	<FilesMatch "^(provision|media)\.php$">
+	<FilesMatch "^(provision|media|bootstrap)\.php$">
 		Require all granted
 	</FilesMatch>
 </IfModule>
 <IfModule !mod_authz_core.c>
-	<FilesMatch "^(provision|media)\.php$">
+	<FilesMatch "^(provision|media|bootstrap)\.php$">
 		Allow from all
 	</FilesMatch>
 </IfModule>

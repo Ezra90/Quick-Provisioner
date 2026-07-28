@@ -1050,6 +1050,91 @@ switch ($action) {
         qp_pdo()->query("TRUNCATE TABLE quickprovisioner_access_log");
         $response = ['status' => true, 'message' => 'Access log cleared'];
         break;
+
+    case 'check_sync':
+        // TIPT-style: nudge handset to re-fetch config via SIP NOTIFY Event: check-sync
+        $id = $_REQUEST['id'] ?? null;
+        if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
+        $device = qp_db_exec("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id])->fetch(PDO::FETCH_ASSOC);
+        if (!$device) { $response['message'] = 'Device not found'; break; }
+        $ext = preg_replace('/[^0-9A-Za-z_\-]/', '', (string)($device['extension'] ?? ''));
+        if ($ext === '') { $response['message'] = 'Device has no extension'; break; }
+
+        $attempts = [];
+        $ok = false;
+        $cmds = [
+            'pjsip' => 'asterisk -rx ' . escapeshellarg("pjsip send notify check-sync endpoint {$ext}"),
+            'sip'   => 'asterisk -rx ' . escapeshellarg("sip notify check-sync {$ext}"),
+        ];
+        foreach ($cmds as $chan => $cmd) {
+            $out = [];
+            $code = 0;
+            exec($cmd . ' 2>&1', $out, $code);
+            $text = trim(implode("\n", $out));
+            $attempts[] = ['channel' => $chan, 'exit' => $code, 'output' => $text];
+            // Asterisk returns 0 even when endpoint missing sometimes; treat obvious success strings
+            if ($code === 0 && stripos($text, 'failed') === false && stripos($text, 'unable') === false && stripos($text, 'not found') === false) {
+                $ok = true;
+                break;
+            }
+            if ($code === 0 && $text === '') {
+                $ok = true;
+                break;
+            }
+        }
+        if ($ok) {
+            $response = ['status' => true, 'message' => "check-sync sent to {$ext}", 'attempts' => $attempts];
+        } else {
+            $response = ['status' => false, 'message' => "Failed to notify {$ext}. Is the phone registered?", 'attempts' => $attempts];
+        }
+        break;
+
+    case 'rebuild_device':
+        // Regenerate/validate config (dynamic) then optionally notify the phone
+        $id = $_REQUEST['id'] ?? null;
+        $notify = !empty($_REQUEST['notify']);
+        if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
+        $device = qp_db_exec("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id])->fetch(PDO::FETCH_ASSOC);
+        if (!$device) { $response['message'] = 'Device not found'; break; }
+        $model = basename($device['model']);
+        $template_file = qp_resolve_template_file($model, $templates_dir);
+        if (!$template_file) { $response['message'] = 'Template not found for model: ' . $model; break; }
+        $template_source = file_get_contents($template_file);
+        $meta = qp_parse_template_meta($template_source);
+        if ($meta === null) { $response['message'] = 'Template META invalid'; break; }
+
+        // Touch custom_options rebuilt_at so preview/provision paths see a change marker
+        $co = [];
+        if (!empty($device['custom_options_json'])) {
+            $co = json_decode($device['custom_options_json'], true) ?: [];
+        }
+        $co['rebuilt_at'] = gmdate('c');
+        qp_db_exec(
+            "UPDATE quickprovisioner_devices SET custom_options_json=? WHERE id=?",
+            [json_encode($co), (int)$id]
+        );
+
+        $notifyResult = null;
+        if ($notify) {
+            $ext = preg_replace('/[^0-9A-Za-z_\-]/', '', (string)($device['extension'] ?? ''));
+            if ($ext !== '') {
+                $out = [];
+                $code = 0;
+                exec('asterisk -rx ' . escapeshellarg("pjsip send notify check-sync endpoint {$ext}") . ' 2>&1', $out, $code);
+                if ($code !== 0) {
+                    exec('asterisk -rx ' . escapeshellarg("sip notify check-sync {$ext}") . ' 2>&1', $out, $code);
+                }
+                $notifyResult = ['exit' => $code, 'output' => trim(implode("\n", $out))];
+            }
+        }
+        $response = [
+            'status' => true,
+            'message' => 'Config rebuilt' . ($notify ? ' and notify attempted' : ''),
+            'rebuilt_at' => $co['rebuilt_at'],
+            'notify' => $notifyResult,
+            'provision_hint' => 'provision.php?mac=' . rawurlencode($device['mac'] ?? ''),
+        ];
+        break;
 }
 
 echo json_encode($response);

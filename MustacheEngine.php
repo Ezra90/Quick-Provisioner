@@ -450,6 +450,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $maxLineKeys = $meta['max_line_keys'] ?? 0;
     $lineKeys = [];
     $attendantKeys = [];
+    $expansionKeys = [];
 
     foreach ($keys as $k) {
         $rawType    = $k['type'] ?? 'line';
@@ -457,8 +458,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         if ($rawType === 'speeddial') {
             $rawType = 'speed_dial';
         }
-        $typeCode   = $typeMapping[$rawType] ?? ($typeMapping[str_replace('_', '', $rawType)] ?? $rawType);
-        // Yealink type_mapping uses speed_dial; also try without underscore
+        $typeCode   = $typeMapping[$rawType] ?? $rawType;
         if (!isset($typeMapping[$rawType]) && $rawType === 'speed_dial' && isset($typeMapping['speeddial'])) {
             $typeCode = $typeMapping['speeddial'];
         }
@@ -470,6 +470,8 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         $keyLabel   = $k['label'] ?? '';
         $keyLine    = $k['line'] ?? 1;
         $pickupCode = $k['pickup_code'] ?? '';
+        $role       = $k['role'] ?? 'line';
+        $module     = (int)($k['module'] ?? 0);
 
         $entry = [
             'position'    => $position,
@@ -483,7 +485,20 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
             'is_blf'      => ($rawType === 'blf'),
             'full_value'  => $fullValue,
             'short_dial_mode' => $shortMode,
+            'role'        => $role,
+            'module'      => $module,
         ];
+
+        if ($role === 'expansion' || $module > 0) {
+            $expansionKeys[] = [
+                'module'    => max(1, $module),
+                'position'  => $position,
+                'type_code' => $typeCode,
+                'key_value' => $keyValue,
+                'key_label' => $keyLabel,
+            ];
+            continue;
+        }
 
         if ($position <= $maxLineKeys || $maxLineKeys === 0) {
             $lineKeys[] = $entry;
@@ -615,7 +630,8 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'polycom_contacts_directory' => $server_info['polycom_contacts_directory'] ?? '',
         'has_polycom_contacts_directory' => !empty($server_info['polycom_contacts_directory']) && !empty($contactEntries),
         'attendant_keys'    => $attendantKeys,
-        'expansion_keys'    => [],
+        'expansion_keys'    => $expansionKeys,
+        'has_expansion_keys'=> !empty($expansionKeys),
     ];
 
     // Merge all custom_options directly into context (template can reference any custom var)

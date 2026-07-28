@@ -279,7 +279,21 @@ $csrf_token = $_SESSION['qp_csrf'];
 
                                     <!-- Button Layout Sub-Tab -->
                                     <div id="sub-buttons" class="tab-pane fade">
-                                        <p class="text-muted">Click buttons on the phone to configure their function.</p>
+                                        <p class="text-muted">Click buttons on the handset preview to program them. Yealink T46U/T54W: with &gt;10 DSS keys the phone uses <strong>3×9 keys</strong> (L1–5 / R6–9) and the <strong>bottom-right is the page switcher</strong>, not a linekey. Poly VVX450: L1–6 / R7–12. Cisco 8851: 5 programmable keys on the left.</p>
+                                        <div class="btn-toolbar" style="margin-bottom:10px;">
+                                            <div class="btn-group">
+                                                <button type="button" class="btn btn-primary btn-sm" onclick="autofillButtonsFromFreepbx('empty')"><i class="fa fa-magic"></i> Auto-fill empty from FreePBX</button>
+                                                <button type="button" class="btn btn-default btn-sm" onclick="autofillButtonsFromFreepbx('all')"><i class="fa fa-list"></i> Replace all with FreePBX BLFs</button>
+                                            </div>
+                                            <div class="btn-group">
+                                                <button type="button" class="btn btn-info btn-sm" onclick="loadSamplePreset()"><i class="fa fa-th"></i> Sample Buttons</button>
+                                                <button type="button" class="btn btn-warning btn-sm" onclick="clearAllButtons()"><i class="fa fa-trash"></i> Clear Buttons</button>
+                                            </div>
+                                        </div>
+                                        <div class="form-group" id="layoutTargetGrp" style="display:none;">
+                                            <label>Layout target</label>
+                                            <select id="layoutTarget" class="form-control" onchange="onLayoutTargetChange()"></select>
+                                        </div>
                                         <div class="form-group" id="pageSelectorGrp">
                                             <label>Page</label>
                                             <select id="pageSelect" class="form-control" onchange="renderPreview()"></select>
@@ -290,6 +304,7 @@ $csrf_token = $_SESSION['qp_csrf'];
                                                 <div id="previewContainer" style="position:relative; margin:0 auto; border:1px solid #ccc;"></div>
                                             </div>
                                         </div>
+                                        <p class="text-muted" id="bootstrapHint" style="margin-top:10px;"></p>
                                     </div>
 
                                     <!-- Contacts Sub-Tab -->
@@ -509,6 +524,9 @@ $csrf_token = $_SESSION['qp_csrf'];
           </div>
           <small class="text-muted" id="keyLabelHint"></small>
         </div>
+        <input type="hidden" id="keyRole" value="line">
+        <input type="hidden" id="keyModule" value="0">
+        <p class="help-block" id="keyRoleHint" style="display:none;"></p>
         <button class="btn btn-primary" onclick="saveKey()">Save</button>
         <button class="btn btn-warning" onclick="clearKey()">Clear</button>
       </div>
@@ -553,9 +571,59 @@ var profiles = {};
 var templateSources = {};
 var smartDialShortcuts = {};
 var isExpandedView = false;
+var layoutTarget = 'phone'; // 'phone' | 'exp:1' | 'exp:2' ...
 var csrf = '<?= $csrf_token ?>';
 var freepbxExtensions = <?= json_encode($extensions, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS) ?>;
 var keyLabelCustomised = false;
+
+function parseLayoutTarget() {
+    if (layoutTarget === 'phone') return { role: 'line', module: 0 };
+    var m = /^exp:(\d+)$/.exec(layoutTarget);
+    return { role: 'expansion', module: m ? parseInt(m[1], 10) : 1 };
+}
+
+function findKey(idx, role, module) {
+    role = role || 'line';
+    module = module || 0;
+    return currentKeys.find(function(k) {
+        var kr = k.role || 'line';
+        var km = parseInt(k.module, 10) || 0;
+        return k.index === idx && kr === role && km === module;
+    });
+}
+
+function buildExpansionSlots(em, page) {
+    // Yealink EXP40/EXP50: page N has keys ((N-1)*20+1)..(N*20)
+    // Physical: left column 10 keys (top→bottom), then right column 10 keys
+    var kpp = (em && em.keys_per_page) || 20;
+    var rows = Math.floor(kpp / 2) || 10;
+    var start = (page - 1) * kpp + 1;
+    var slots = [];
+    var leftX = 40, rightX = 250, y0 = 48, rowH = 28;
+    for (var r = 0; r < rows; r++) {
+        slots.push({
+            index: start + r,
+            x: leftX,
+            y: y0 + r * rowH,
+            width: 48,
+            height: 24,
+            page: page,
+            side: 'left',
+            role: 'expansion'
+        });
+        slots.push({
+            index: start + rows + r,
+            x: rightX,
+            y: y0 + r * rowH,
+            width: 48,
+            height: 24,
+            page: page,
+            side: 'right',
+            role: 'expansion'
+        });
+    }
+    return slots;
+}
 
 function ajax(cmd, data, cb) {
     data = data || {};
@@ -578,10 +646,27 @@ function loadDevices() {
             if (d.secret_source === 'Custom') sec += ' <span class="label label-info">Custom</span>';
             else if (d.secret_source === 'FreePBX') sec += ' <span class="label label-success">FreePBX</span>';
             html += '<tr><td>' + esc(d.mac) + '</td><td>' + esc(d.extension) + '</td><td>' + sec + '</td><td>' + esc(d.model) + '</td>';
-            html += '<td><button class="btn btn-xs btn-default" onclick="editDevice(' + d.id + ')"><i class="fa fa-pencil"></i> Edit</button> ';
-            html += '<button class="btn btn-xs btn-danger" onclick="deleteDevice(' + d.id + ')"><i class="fa fa-trash"></i></button></td></tr>';
+            html += '<td style="white-space:nowrap;">';
+            html += '<button class="btn btn-xs btn-default" onclick="editDevice(' + d.id + ')" title="Edit"><i class="fa fa-pencil"></i></button> ';
+            html += '<button class="btn btn-xs btn-info" onclick="rebuildDevice(' + d.id + ', false)" title="Rebuild config"><i class="fa fa-refresh"></i></button> ';
+            html += '<button class="btn btn-xs btn-warning" onclick="rebuildDevice(' + d.id + ', true)" title="Rebuild + check-sync notify"><i class="fa fa-bolt"></i></button> ';
+            html += '<button class="btn btn-xs btn-danger" onclick="deleteDevice(' + d.id + ')" title="Delete"><i class="fa fa-trash"></i></button>';
+            html += '</td></tr>';
         });
         $('#deviceListBody').html(html || '<tr><td colspan="5" class="text-muted">No devices yet. Click Add New to get started.</td></tr>');
+    });
+}
+
+function rebuildDevice(id, notify) {
+    var msg = notify
+        ? 'Rebuild config and send SIP check-sync to the phone?'
+        : 'Mark config rebuilt (phone will pick up on next provision)?';
+    if (!confirm(msg)) return;
+    ajax('rebuild_device', {id: id, notify: notify ? 1 : 0}, function(r) {
+        if (!r.status) { alert(r.message || 'Rebuild failed'); return; }
+        var extra = '';
+        if (r.notify) extra = '\nNotify: exit=' + r.notify.exit + (r.notify.output ? (' ' + r.notify.output) : '');
+        alert((r.message || 'OK') + extra);
     });
 }
 
@@ -1106,14 +1191,165 @@ function updatePageSelect() {
     var model = $('#model').val(), p = profiles[model];
     if (!p || !p.visual_editor) return;
     var ve = p.visual_editor;
-    if (ve.expandable_layout) { $('#pageSelectorGrp').hide(); isExpandedView = false; }
-    else {
+    var em = ve.expansion_modules;
+    var ltHtml = '<option value="phone">Phone DSS keys</option>';
+    if (em && em.supported) {
+        var maxM = em.max_modules || 3;
+        for (var mi = 1; mi <= maxM; mi++) {
+            ltHtml += '<option value="exp:' + mi + '">Expansion module ' + mi + '</option>';
+        }
+        $('#layoutTargetGrp').show();
+    } else {
+        $('#layoutTargetGrp').hide();
+        layoutTarget = 'phone';
+    }
+    $('#layoutTarget').html(ltHtml);
+    if ($('#layoutTarget option[value="' + layoutTarget + '"]').length) {
+        $('#layoutTarget').val(layoutTarget);
+    } else {
+        layoutTarget = 'phone';
+        $('#layoutTarget').val('phone');
+    }
+
+    var tgt = parseLayoutTarget();
+    if (ve.expandable_layout && tgt.role === 'line') {
+        $('#pageSelectorGrp').hide();
+        isExpandedView = false;
+    } else {
         $('#pageSelectorGrp').show();
-        var pp = ve.keys_per_page || 10, mk = p.max_line_keys || 29, mp = Math.ceil(mk/pp);
+        var mp = 1;
+        if (tgt.role === 'expansion' && em) {
+            mp = em.pages_per_module || Math.ceil((em.keys_per_module || 60) / (em.keys_per_page || 20)) || 3;
+        } else {
+            var pp = ve.keys_per_page || 10;
+            if (ve.model_info && ve.model_info[model] && ve.model_info[model].keys_per_page) {
+                pp = ve.model_info[model].keys_per_page;
+            }
+            var mk = p.max_line_keys || 29;
+            if (ve.model_info && ve.model_info[model] && ve.model_info[model].max_keys) {
+                mk = ve.model_info[model].max_keys;
+            }
+            mp = ve.total_pages || Math.ceil(mk / pp);
+            (ve.keys || []).forEach(function(k) { if (k.page && k.page > mp) mp = k.page; });
+            ve.total_pages = mp;
+        }
         var h = '';
-        for (var i=1;i<=mp;i++) h += '<option value="'+i+'">Page '+i+'</option>';
+        for (var i = 1; i <= mp; i++) h += '<option value="' + i + '">Page ' + i + '</option>';
         $('#pageSelect').html(h);
     }
+    // Bootstrap URL hint (TIPT-style)
+    var mac = ($('#mac').val() || '').replace(/[^0-9A-Fa-f]/g, '');
+    if (mac.length === 12) {
+        $('#bootstrapHint').html('Bootstrap URL: <code>…/bootstrap.php?mac=' + esc(mac.toUpperCase()) + '</code> — handset pulls a tiny redirect cfg then full provision (qsetup / DHCP option 66 friendly).').show();
+    } else {
+        $('#bootstrapHint').text('Save a MAC to see the bootstrap.php URL for zero-touch / qsetup onboarding.').show();
+    }
+}
+
+function onLayoutTargetChange() {
+    layoutTarget = $('#layoutTarget').val() || 'phone';
+    updatePageSelect();
+    renderPreview();
+}
+
+function clearAllButtons() {
+    var tgt = parseLayoutTarget();
+    var msg = tgt.role === 'expansion'
+        ? ('Clear all expansion module ' + tgt.module + ' keys?')
+        : 'Clear all programmed phone buttons?';
+    if (currentKeys.length && !confirm(msg)) return;
+    if (tgt.role === 'expansion') {
+        currentKeys = currentKeys.filter(function(k) {
+            return !((k.role || 'line') === 'expansion' && (parseInt(k.module, 10) || 0) === tgt.module);
+        });
+    } else {
+        currentKeys = currentKeys.filter(function(k) {
+            return (k.role || 'line') === 'expansion';
+        });
+    }
+    renderPreview();
+}
+
+function autofillButtonsFromFreepbx(mode) {
+    var model = $('#model').val(), p = profiles[model];
+    if (!p || !p.visual_editor) {
+        alert('Load a model with visual_editor keys first.');
+        return;
+    }
+    var ve = p.visual_editor;
+    var tgt = parseLayoutTarget();
+    var slots;
+    if (tgt.role === 'expansion') {
+        var em = ve.expansion_modules || {};
+        var pages = em.pages_per_module || 3;
+        slots = [];
+        for (var pg = 1; pg <= pages; pg++) {
+            slots = slots.concat(buildExpansionSlots(em, pg));
+        }
+    } else {
+        if (!ve.keys || !ve.keys.length) {
+            alert('This model has no phone DSS key slots.');
+            return;
+        }
+        slots = (ve.keys || []).slice().sort(function(a, b) { return (a.index || 0) - (b.index || 0); });
+    }
+    var selfExt = String($('#extension').val() || '');
+    ajax('list_freepbx_extensions', {}, function(r) {
+        if (!r.status) { alert(r.message || 'Failed to load FreePBX extensions'); return; }
+        var exts = (r.extensions || []).filter(function(e) {
+            return String(e.extension) !== selfExt;
+        });
+        if (!exts.length) { alert('No other FreePBX extensions to map.'); return; }
+
+        if (mode === 'all') {
+            if (!confirm(tgt.role === 'expansion'
+                ? ('Replace expansion module ' + tgt.module + ' keys with FreePBX BLFs?')
+                : 'Replace all phone buttons with FreePBX BLFs?')) return;
+            if (tgt.role === 'expansion') {
+                currentKeys = currentKeys.filter(function(k) {
+                    return !((k.role || 'line') === 'expansion' && (parseInt(k.module, 10) || 0) === tgt.module);
+                });
+            } else {
+                currentKeys = currentKeys.filter(function(k) {
+                    return (k.role || 'line') === 'expansion';
+                });
+            }
+        }
+
+        var used = {};
+        currentKeys.forEach(function(k) {
+            var kr = k.role || 'line';
+            var km = parseInt(k.module, 10) || 0;
+            if (kr === tgt.role && km === tgt.module) used[k.index] = true;
+        });
+        var ei = 0, added = 0;
+        slots.forEach(function(slot) {
+            if (ei >= exts.length) return;
+            if (mode === 'empty' && used[slot.index]) return;
+            var ext = exts[ei++];
+            var name = ext.name || ext.extension;
+            var row = {
+                index: slot.index,
+                type: 'blf',
+                value: String(ext.extension),
+                full_value: String(ext.extension),
+                label: name,
+                short_dial_mode: 'full',
+                custom_digits: 4,
+                role: tgt.role,
+                module: tgt.module
+            };
+            currentKeys = currentKeys.filter(function(k) {
+                var kr = k.role || 'line';
+                var km = parseInt(k.module, 10) || 0;
+                return !(k.index === slot.index && kr === tgt.role && km === tgt.module);
+            });
+            currentKeys.push(row);
+            added++;
+        });
+        renderPreview();
+        alert('Mapped ' + added + ' BLF button(s) from FreePBX (skipped this device\'s own extension).');
+    });
 }
 
 function decodeChassisSvg(ve) {
@@ -1131,65 +1367,111 @@ function renderPreview() {
     var model = $('#model').val(), p = profiles[model];
     if (!p || !p.visual_editor) return;
     var ve = p.visual_editor, page = parseInt($('#pageSelect').val()) || 1;
-    var total = ve.total_pages || Math.ceil((p.max_line_keys||29) / (ve.keys_per_page||10));
+    var tgt = parseLayoutTarget();
+    var em = ve.expansion_modules;
+    var total = 1;
+    if (tgt.role === 'expansion' && em) {
+        total = em.pages_per_module || Math.ceil((em.keys_per_module || 60) / (em.keys_per_page || 20)) || 3;
+    } else {
+        total = ve.total_pages || Math.ceil((p.max_line_keys || 29) / (ve.keys_per_page || 10));
+        if (ve.model_info && ve.model_info[model] && ve.model_info[model].max_keys && ve.model_info[model].keys_per_page) {
+            total = Math.ceil(ve.model_info[model].max_keys / ve.model_info[model].keys_per_page);
+        }
+        (ve.keys || []).forEach(function(k) { if (k.page && k.page > total) total = k.page; });
+    }
     var c = $('#previewContainer');
-    c.empty().css({width:ve.schematic.chassis_width+'px', height:ve.schematic.chassis_height+'px', position:'relative'});
+    c.empty().css({width: ve.schematic.chassis_width + 'px', height: ve.schematic.chassis_height + 'px', position: 'relative'});
     var dn = p.display_name || model;
-    var chassis = decodeChassisSvg(ve);
-    var svg = chassis || generatePhoneSVG(ve.schematic, dn, page, total);
-    // Prefer base64 of UTF-8-safe SVG for unicode-free chassis art
-    try {
-        c.css({backgroundImage:'url(data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svg)))+')', backgroundSize:'contain', backgroundRepeat:'no-repeat', backgroundPosition:'center top'});
-    } catch (e) {
-        c.css({backgroundImage:'url(data:image/svg+xml;base64,'+btoa(svg)+')', backgroundSize:'contain', backgroundRepeat:'no-repeat', backgroundPosition:'center top'});
+    if (tgt.role === 'expansion') {
+        dn = 'EXP' + tgt.module;
+        c.css({backgroundImage: 'none', backgroundColor: '#1a1a1a'});
+        $('<div>').css({
+            position: 'absolute', left: 0, top: 8, width: '100%', textAlign: 'center',
+            color: '#9cf', fontSize: '12px', fontWeight: 'bold', letterSpacing: '1px'
+        }).text('Expansion Module ' + tgt.module + ' — Page ' + page + '/' + total).appendTo(c);
+    } else {
+        var chassis = decodeChassisSvg(ve);
+        var svg = chassis || generatePhoneSVG(ve.schematic, dn, page, total);
+        try {
+            c.css({backgroundImage: 'url(data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg))) + ')', backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center top', backgroundColor: 'transparent'});
+        } catch (e) {
+            c.css({backgroundImage: 'url(data:image/svg+xml;base64,' + btoa(svg) + ')', backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center top'});
+        }
+        var wp = $('#wallpaper').val();
+        if (wp) {
+            var wpu = wp.startsWith('http') ? wp : 'media.php?file=' + encodeURIComponent(wp) + '&preview=1';
+            var mode = $('#wallpaper_mode').val();
+            $('<div>').css({position: 'absolute', left: ve.schematic.screen_x + 'px', top: ve.schematic.screen_y + 'px', width: ve.schematic.screen_width + 'px', height: ve.schematic.screen_height + 'px', backgroundImage: 'url(' + wpu + ')', backgroundSize: mode === 'crop' ? 'cover' : 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center', borderRadius: '2px'}).appendTo(c);
+        }
     }
 
-    var wp = $('#wallpaper').val();
-    if (wp) {
-        var wpu = wp.startsWith('http') ? wp : 'media.php?file='+encodeURIComponent(wp)+'&preview=1';
-        var mode = $('#wallpaper_mode').val();
-        $('<div>').css({position:'absolute', left:ve.schematic.screen_x+'px', top:ve.schematic.screen_y+'px', width:ve.schematic.screen_width+'px', height:ve.schematic.screen_height+'px', backgroundImage:'url('+wpu+')', backgroundSize:mode==='crop'?'cover':'contain', backgroundRepeat:'no-repeat', backgroundPosition:'center', borderRadius:'2px'}).appendTo(c);
-    }
+    var kl = $('<div>').css({position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'}).appendTo(c);
+    var slots = tgt.role === 'expansion'
+        ? buildExpansionSlots(em || {}, page)
+        : (ve.keys || []);
 
-    var kl = $('<div>').css({position:'absolute', top:0, left:0, width:'100%', height:'100%'}).appendTo(c);
-    ve.keys.forEach(function(key) {
-        var show = ve.expandable_layout ? (isExpandedView || key.column===1 || key.column===5) : (key.page===undefined || key.page===page);
+    slots.forEach(function(key) {
+        var show = true;
+        if (tgt.role === 'line') {
+            show = ve.expandable_layout ? (isExpandedView || key.column === 1 || key.column === 5) : (key.page === undefined || key.page === page);
+        }
         if (!show) return;
-        var kd = currentKeys.find(function(k){return k.index===key.index;});
+        var kd = findKey(key.index, tgt.role, tgt.module);
         var has = kd && kd.type;
-        var lbl = (kd && kd.label) ? kd.label : 'Key '+key.index;
-        var bg='rgba(80,80,80,0.8)', bc='rgba(150,150,150,0.5)';
+        var lbl = (kd && kd.label) ? kd.label : 'Key ' + key.index;
+        var bg = 'rgba(80,80,80,0.8)', bc = 'rgba(150,150,150,0.5)';
         if (has) {
-            switch(kd.type) {
-                case 'line': bg='rgba(46,204,64,0.3)'; bc='rgba(46,204,64,0.6)'; break;
-                case 'blf': bg='rgba(0,116,217,0.3)'; bc='rgba(0,116,217,0.6)'; break;
-                case 'speed_dial': bg='rgba(255,133,27,0.3)'; bc='rgba(255,133,27,0.6)'; break;
-                default: bg='rgba(177,13,201,0.3)'; bc='rgba(177,13,201,0.6)';
+            switch (kd.type) {
+                case 'line': bg = 'rgba(46,204,64,0.3)'; bc = 'rgba(46,204,64,0.6)'; break;
+                case 'blf': bg = 'rgba(0,116,217,0.3)'; bc = 'rgba(0,116,217,0.6)'; break;
+                case 'speed_dial': bg = 'rgba(255,133,27,0.3)'; bc = 'rgba(255,133,27,0.6)'; break;
+                default: bg = 'rgba(177,13,201,0.3)'; bc = 'rgba(177,13,201,0.6)';
             }
         }
-        $('<button>').css({position:'absolute', left:key.x+'px', top:key.y+'px', width:(key.width||44)+'px', height:(key.height||24)+'px', textAlign:'center', fontSize:'9px', padding:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', borderRadius:'3px', border:'1px solid '+bc, backgroundColor:bg, color:has?'#fff':'#aaa', cursor:'pointer', fontWeight:has?'bold':'normal', lineHeight:((key.height||24)-4)+'px'}).text(lbl).click(function(){editKey(key.index);}).appendTo(kl);
+        $('<button>').css({position: 'absolute', left: key.x + 'px', top: key.y + 'px', width: (key.width || 44) + 'px', height: (key.height || 24) + 'px', textAlign: 'center', fontSize: '9px', padding: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', borderRadius: '3px', border: '1px solid ' + bc, backgroundColor: bg, color: has ? '#fff' : '#aaa', cursor: 'pointer', fontWeight: has ? 'bold' : 'normal', lineHeight: ((key.height || 24) - 4) + 'px'}).text(lbl).click(function() { editKey(key.index, tgt.role, tgt.module); }).appendTo(kl);
     });
 
-    // Soft-key chrome from template (hardware under-screen keys)
-    (ve.soft_keys || []).forEach(function(sk) {
-        var $btn = $('<div>').css({
-            position:'absolute', left:sk.x+'px', top:sk.y+'px',
-            width:(sk.width||48)+'px', height:(sk.height||20)+'px',
-            textAlign:'center', fontSize:'9px', lineHeight:((sk.height||20)-2)+'px',
-            borderRadius:'3px', border:'1px solid rgba(150,150,150,0.45)',
-            backgroundColor:'rgba(40,40,40,0.75)', color:'#ccc', overflow:'hidden'
-        }).text(sk.label || '');
-        if (sk.programmable && sk.index) {
-            $btn.css({cursor:'pointer', backgroundColor:'rgba(60,80,100,0.85)'}).click(function(){ editKey(sk.index); });
+    if (tgt.role === 'line') {
+        // Soft-key chrome from template (hardware under-screen keys)
+        (ve.soft_keys || []).forEach(function(sk) {
+            var $btn = $('<div>').css({
+                position: 'absolute', left: sk.x + 'px', top: sk.y + 'px',
+                width: (sk.width || 48) + 'px', height: (sk.height || 20) + 'px',
+                textAlign: 'center', fontSize: '9px', lineHeight: ((sk.height || 20) - 2) + 'px',
+                borderRadius: '3px', border: '1px solid rgba(150,150,150,0.45)',
+                backgroundColor: 'rgba(40,40,40,0.75)', color: '#ccc', overflow: 'hidden'
+            }).text(sk.label || '');
+            if (sk.programmable && sk.index) {
+                $btn.css({cursor: 'pointer', backgroundColor: 'rgba(60,80,100,0.85)'}).click(function() { editKey(sk.index, 'line', 0); });
+            }
+            $btn.appendTo(kl);
+        });
+
+        // Yealink-style page switcher (bottom-right physical key, not programmable)
+        if (ve.page_switcher && total > 1) {
+            var ps = ve.page_switcher;
+            $('<div>').css({
+                position: 'absolute', left: ps.x + 'px', top: ps.y + 'px',
+                width: (ps.width || 42) + 'px', height: (ps.height || 22) + 'px',
+                textAlign: 'center', fontSize: '9px', lineHeight: ((ps.height || 22) - 2) + 'px',
+                borderRadius: '3px', border: '1px dashed rgba(100,180,255,0.7)',
+                backgroundColor: 'rgba(30,60,90,0.85)', color: '#9cf', cursor: 'pointer'
+            }).text((ps.label || 'Page') + ' ' + page + '/' + total).click(function() {
+                var next = page >= total ? 1 : page + 1;
+                $('#pageSelect').val(next); renderPreview();
+            }).appendTo(kl);
         }
-        $btn.appendTo(kl);
-    });
 
-    // Page nav buttons
-    if (!ve.expandable_layout && total > 1) {
-        var ny = ve.schematic.screen_y + ve.schematic.screen_height + 10, nx = ve.schematic.chassis_width/2;
-        if (page > 1) $('<button>').css({position:'absolute', left:(nx-85)+'px', top:ny+'px', width:'70px', height:'24px', fontSize:'11px', borderRadius:'4px', border:'1px solid rgba(150,150,150,0.4)', backgroundColor:'rgba(60,60,60,0.9)', color:'#ccc', cursor:'pointer', zIndex:1000}).html('&#9664; Prev').click(function(){$('#pageSelect').val(Math.max(1,page-1)); renderPreview();}).appendTo(c);
-        if (page < total) $('<button>').css({position:'absolute', left:(nx+15)+'px', top:ny+'px', width:'70px', height:'24px', fontSize:'11px', borderRadius:'4px', border:'1px solid rgba(150,150,150,0.4)', backgroundColor:'rgba(60,60,60,0.9)', color:'#ccc', cursor:'pointer', zIndex:1000}).html('More &#9654;').click(function(){$('#pageSelect').val(Math.min(total,page+1)); renderPreview();}).appendTo(c);
+        // Page nav buttons
+        if (!ve.expandable_layout && total > 1) {
+            var ny = ve.schematic.screen_y + ve.schematic.screen_height + 10, nx = ve.schematic.chassis_width / 2;
+            if (page > 1) $('<button>').css({position: 'absolute', left: (nx - 85) + 'px', top: ny + 'px', width: '70px', height: '24px', fontSize: '11px', borderRadius: '4px', border: '1px solid rgba(150,150,150,0.4)', backgroundColor: 'rgba(60,60,60,0.9)', color: '#ccc', cursor: 'pointer', zIndex: 1000}).html('&#9664; Prev').click(function() { $('#pageSelect').val(Math.max(1, page - 1)); renderPreview(); }).appendTo(c);
+            if (page < total) $('<button>').css({position: 'absolute', left: (nx + 15) + 'px', top: ny + 'px', width: '70px', height: '24px', fontSize: '11px', borderRadius: '4px', border: '1px solid rgba(150,150,150,0.4)', backgroundColor: 'rgba(60,60,60,0.9)', color: '#ccc', cursor: 'pointer', zIndex: 1000}).html('More &#9654;').click(function() { $('#pageSelect').val(Math.min(total, page + 1)); renderPreview(); }).appendTo(c);
+        }
+    } else if (total > 1) {
+        var eny = ve.schematic.chassis_height - 36, enx = ve.schematic.chassis_width / 2;
+        if (page > 1) $('<button>').css({position: 'absolute', left: (enx - 85) + 'px', top: eny + 'px', width: '70px', height: '24px', fontSize: '11px', borderRadius: '4px', border: '1px solid rgba(150,150,150,0.4)', backgroundColor: 'rgba(60,60,60,0.9)', color: '#ccc', cursor: 'pointer', zIndex: 1000}).html('&#9664; Prev').click(function() { $('#pageSelect').val(Math.max(1, page - 1)); renderPreview(); }).appendTo(c);
+        if (page < total) $('<button>').css({position: 'absolute', left: (enx + 15) + 'px', top: eny + 'px', width: '70px', height: '24px', fontSize: '11px', borderRadius: '4px', border: '1px solid rgba(150,150,150,0.4)', backgroundColor: 'rgba(60,60,60,0.9)', color: '#ccc', cursor: 'pointer', zIndex: 1000}).html('More &#9654;').click(function() { $('#pageSelect').val(Math.min(total, page + 1)); renderPreview(); }).appendTo(c);
     }
 }
 
@@ -1215,16 +1497,26 @@ function updateKeyShortDialUi() {
     $('#keyShortDialPreview').text(mode === 'full' || !full ? '' : ('Config will dial: ' + eff));
 }
 
-function editKey(idx) {
+function editKey(idx, role, module) {
+    var tgt = parseLayoutTarget();
+    role = role || tgt.role;
+    module = (module !== undefined && module !== null) ? module : tgt.module;
     $('#keyIndex').text(idx);
-    var k = currentKeys.find(function(x){return x.index===idx;}) || {};
+    $('#keyRole').val(role);
+    $('#keyModule').val(module);
+    if (role === 'expansion') {
+        $('#keyRoleHint').text('Programming expansion_module.' + module + '.key.' + idx).show();
+    } else {
+        $('#keyRoleHint').hide().text('');
+    }
+    var k = findKey(idx, role, module) || {};
     keyLabelCustomised = !!(k.label && String(k.label).length);
     var t = k.type || 'line';
     if (t === 'speeddial') t = 'speed_dial';
     $('#keyType').val(t);
     var full = k.full_value || k.fullValue || k.value || '';
     $('#keyValue').val(full);
-    $('#keyLabel').val(k.label||'');
+    $('#keyLabel').val(k.label || '');
     $('#keyShortDial').val(k.short_dial_mode || k.shortDialMode || 'full');
     $('#keyCustomDigits').val(k.custom_digits || k.customDigits || 4);
     populateKeyExtSelect();
@@ -1236,6 +1528,8 @@ function editKey(idx) {
 }
 function saveKey() {
     var idx = parseInt($('#keyIndex').text());
+    var role = $('#keyRole').val() || 'line';
+    var module = parseInt($('#keyModule').val(), 10) || 0;
     var t = $('#keyType').val();
     var full = $.trim($('#keyValue').val());
     var l = $.trim($('#keyLabel').val());
@@ -1249,9 +1543,11 @@ function saveKey() {
         full_value: full,
         label: l,
         short_dial_mode: mode,
-        custom_digits: dig
+        custom_digits: dig,
+        role: role,
+        module: module
     };
-    var ex = currentKeys.find(function(k){return k.index===idx;});
+    var ex = findKey(idx, role, module);
     if (ex) {
         ex.type = payload.type;
         ex.value = payload.value;
@@ -1259,6 +1555,8 @@ function saveKey() {
         ex.label = payload.label;
         ex.short_dial_mode = payload.short_dial_mode;
         ex.custom_digits = payload.custom_digits;
+        ex.role = payload.role;
+        ex.module = payload.module;
     } else {
         currentKeys.push(payload);
     }
@@ -1266,7 +1564,13 @@ function saveKey() {
 }
 function clearKey() {
     var idx = parseInt($('#keyIndex').text());
-    currentKeys = currentKeys.filter(function(k){return k.index!==idx;});
+    var role = $('#keyRole').val() || 'line';
+    var module = parseInt($('#keyModule').val(), 10) || 0;
+    currentKeys = currentKeys.filter(function(k) {
+        var kr = k.role || 'line';
+        var km = parseInt(k.module, 10) || 0;
+        return !(k.index === idx && kr === role && km === module);
+    });
     renderPreview(); $('#keyModal').modal('hide');
 }
 
