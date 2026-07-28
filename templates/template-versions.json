@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "generated": "2026-07-28T05:40:00Z",
-  "build_number": 10,
-  "commit": "f624ba4",
+  "generated": "2026-07-28T05:40:16Z",
+  "build_number": 12,
+  "commit": "97a77c6",
   "templates": {
     "cisco_88xx.xml.mustache": {
       "sha256": "b0cc50dfd0e6fa94b259c624fbf9e8986d0bde4a218743bbb0cba11ff36e4a36",
@@ -10,9 +10,9 @@
       "last_author": "Ezra"
     },
     "polycom_vvx.xml.mustache": {
-      "sha256": "8113c4f5644144829167202295c0458ed0ee67db511c55c334813e5f47377607",
-      "last_modified": "2026-07-28T15:39:42+10:00",
-      "last_author": "Ezra"
+      "sha256": "d8250c8f1022ad7ec4660af122f316e58489d76dba8b86e5b2c6d0de43e5ad18",
+      "last_modified": "2026-07-28T05:40:03Z",
+      "last_author": "github-actions[bot]"
     },
     "yealink_t4x.cfg.mustache": {
       "sha256": "9a84b0d37128c77e1e63b57b7f326608b9cf77f5e96a6e9ccfa46468fde488d4",
