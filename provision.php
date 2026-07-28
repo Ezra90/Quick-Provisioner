@@ -35,6 +35,62 @@ function qp_log_access($status_code, $path, $mac, $extension, $resource_type) {
     }
 }
 
+/**
+ * Validate remote Basic Auth against a device's prov_username/prov_password.
+ */
+function qp_check_device_basic_auth(array $device) {
+    if (qp_is_local_network()) {
+        return true;
+    }
+    $prov_user = $device['prov_username'] ?? '';
+    $prov_pass = $device['prov_password'] ?? '';
+    if ($prov_user === '' || $prov_pass === '') {
+        // Always require credentials for remote access when no per-device auth configured
+        header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+        header('HTTP/1.0 401 Unauthorized');
+        die('Authentication required');
+    }
+    $user = $_SERVER['PHP_AUTH_USER'] ?? '';
+    $pass = $_SERVER['PHP_AUTH_PW'] ?? '';
+    if ($user !== $prov_user || $pass !== $prov_pass) {
+        header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+        header('HTTP/1.0 401 Unauthorized');
+        die('Authentication required');
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic phonebook XML (?mac=...&type=phonebook) — always generated from contacts_json
+// ---------------------------------------------------------------------------
+if (isset($_GET['type']) && $_GET['type'] === 'phonebook') {
+    $mac = isset($_GET['mac']) ? strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', $_GET['mac'])) : '';
+    if (strlen($mac) !== 12 || !ctype_xdigit($mac)) {
+        http_response_code(400);
+        die('Invalid MAC');
+    }
+    $stmt = \FreePBX::Database()->prepare("SELECT * FROM quickprovisioner_devices WHERE mac=?");
+    $stmt->execute([$mac]);
+    $device = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$device) {
+        http_response_code(404);
+        die('Device not found');
+    }
+    qp_check_device_basic_auth($device);
+    $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
+    if (empty($contacts)) {
+        http_response_code(404);
+        die('No contacts');
+    }
+    $xml = qp_generate_phonebook_xml($contacts, $device['model'] ?? '', $device['extension'] ?? '');
+    qp_save_phonebook_for_device($device, $contacts);
+    header('Content-Type: application/xml; charset=utf-8');
+    header('Content-Disposition: inline; filename="pb_' . $mac . '.xml"');
+    qp_log_access(200, $_SERVER['REQUEST_URI'] ?? '', $mac, $device['extension'] ?? '', 'phonebook');
+    echo $xml;
+    exit;
+}
+
 // ---------------------------------------------------------------------------
 // Asset file serving (ringtones, firmware, phonebook)
 // These endpoints are checked before MAC-based provisioning so that static
@@ -224,7 +280,12 @@ $server_info = [
     'secret'           => $secret,
     'wallpaper_url'    => $wallpaper_url,
     'provisioning_url' => $provisioning_url,
+    'phonebook_url'    => qp_build_phonebook_url($mac),
+    'phonebook_name'   => 'Directory',
 ];
+
+// Keep on-disk phonebook XML in sync for PATH_INFO / static fetches
+qp_save_phonebook_for_device($device);
 
 // ---------------------------------------------------------------------------
 // Build context and render the Mustache template

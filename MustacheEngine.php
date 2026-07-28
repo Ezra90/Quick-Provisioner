@@ -449,12 +449,35 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     }
 
     // --- Build remote_phonebooks array ---
+    // Contacts are name/number entries. Phones expect a remote phonebook *URL*
+    // that returns vendor XML (same model as Pocket-Provisioner), not the number itself.
     $remotePhonebooks = [];
-    foreach ($contacts as $idx => $c) {
+    $phonebookUrl = $server_info['phonebook_url'] ?? '';
+    if ($phonebookUrl !== '' && !empty($contacts)) {
         $remotePhonebooks[] = [
-            'index' => $idx + 1,
-            'name'  => $c['name'] ?? '',
-            'url'   => $c['number'] ?? '',
+            'index' => 1,
+            'name'  => $server_info['phonebook_name'] ?? 'Directory',
+            'url'   => $phonebookUrl,
+        ];
+    }
+
+    // Normalize contacts for template use (and keep Pocket-compatible fields)
+    $contactEntries = [];
+    foreach ($contacts as $idx => $c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $name = trim((string)($c['name'] ?? ''));
+        $number = trim((string)($c['number'] ?? $c['phone'] ?? ''));
+        if ($name === '' && $number === '') {
+            continue;
+        }
+        $contactEntries[] = [
+            'index'  => $idx + 1,
+            'name'   => $name !== '' ? $name : $number,
+            'number' => $number,
+            'phone'  => $number,
+            'source' => $c['source'] ?? 'custom',
         ];
     }
 
@@ -537,8 +560,12 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         // Structured arrays
         'lines'             => $lines,
         'line_keys'         => $lineKeys,
-        'attendant_keys'    => $attendantKeys,
+        'contacts'          => $contactEntries,
+        'has_contacts'      => !empty($contactEntries),
+        'has_phonebook'     => !empty($remotePhonebooks),
+        'phonebook_url'     => $phonebookUrl,
         'remote_phonebooks' => $remotePhonebooks,
+        'attendant_keys'    => $attendantKeys,
         'expansion_keys'    => [],
     ];
 
@@ -622,4 +649,153 @@ function _qp_is_truthy($val) {
         return in_array(strtolower($val), ['1', 'yes', 'true', 'on'], true);
     }
     return !empty($val);
+}
+
+/**
+ * XML-escape a string for phonebook/directory documents.
+ */
+function qp_phonebook_xml_escape($s) {
+    return htmlspecialchars((string)$s, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+}
+
+/**
+ * Normalize contacts_json into [{name, number, source}, ...].
+ */
+function qp_normalize_contacts($contacts_json_or_array) {
+    if (is_string($contacts_json_or_array)) {
+        $contacts = json_decode($contacts_json_or_array, true);
+    } else {
+        $contacts = $contacts_json_or_array;
+    }
+    if (!is_array($contacts)) {
+        return [];
+    }
+    $out = [];
+    foreach ($contacts as $c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $name = trim((string)($c['name'] ?? ''));
+        $number = trim((string)($c['number'] ?? $c['phone'] ?? ''));
+        if ($name === '' && $number === '') {
+            continue;
+        }
+        $source = $c['source'] ?? 'custom';
+        if (!in_array($source, ['freepbx', 'custom'], true)) {
+            $source = 'custom';
+        }
+        $out[] = [
+            'name'   => $name !== '' ? $name : $number,
+            'number' => $number,
+            'source' => $source,
+        ];
+    }
+    return $out;
+}
+
+/**
+ * Generate vendor phonebook XML (Yealink / Polycom / Cisco) from contact entries.
+ * Mirrors Pocket-Provisioner PhonebookService formats.
+ */
+function qp_generate_phonebook_xml(array $contacts, $model = '', $displayName = '') {
+    $m = strtoupper((string)$model);
+    if (strpos($m, 'CISCO') !== false || strpos($m, 'CP') === 0 || preg_match('/(?:^|[^0-9])(?:78|88)\d{2}(?:[^0-9]|$)/', $m)) {
+        return qp_generate_cisco_phonebook_xml($contacts, $displayName);
+    }
+    if (strpos($m, 'POLY') !== false || strpos($m, 'VVX') !== false || strpos($m, 'EDGE') !== false || strpos($m, 'OBI') === 0) {
+        return qp_generate_polycom_phonebook_xml($contacts, $displayName);
+    }
+    return qp_generate_yealink_phonebook_xml($contacts, $displayName);
+}
+
+function qp_generate_yealink_phonebook_xml(array $contacts, $displayName = '') {
+    $buf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<YealinkIPPhoneDirectory>\n";
+    if ($displayName !== '') {
+        $buf .= '  <!-- ' . qp_phonebook_xml_escape($displayName) . " -->\n";
+    }
+    foreach ($contacts as $c) {
+        $buf .= "  <DirectoryEntry>\n";
+        $buf .= '    <Name>' . qp_phonebook_xml_escape($c['name'] ?? '') . "</Name>\n";
+        $buf .= '    <Telephone>' . qp_phonebook_xml_escape($c['number'] ?? '') . "</Telephone>\n";
+        $buf .= "  </DirectoryEntry>\n";
+    }
+    $buf .= "</YealinkIPPhoneDirectory>\n";
+    return $buf;
+}
+
+function qp_generate_polycom_phonebook_xml(array $contacts, $displayName = '') {
+    $buf = "<?xml version=\"1.0\" standalone=\"yes\"?>\n<directory>\n";
+    if ($displayName !== '') {
+        $buf .= '  <!-- ' . qp_phonebook_xml_escape($displayName) . " -->\n";
+    }
+    $buf .= "  <item_list>\n";
+    foreach ($contacts as $c) {
+        $buf .= "    <item>\n";
+        $buf .= '      <fn>' . qp_phonebook_xml_escape($c['name'] ?? '') . "</fn>\n";
+        $buf .= '      <ct>' . qp_phonebook_xml_escape($c['number'] ?? '') . "</ct>\n";
+        $buf .= "    </item>\n";
+    }
+    $buf .= "  </item_list>\n</directory>\n";
+    return $buf;
+}
+
+function qp_generate_cisco_phonebook_xml(array $contacts, $displayName = '') {
+    $buf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CiscoIPPhoneDirectory>\n";
+    if ($displayName !== '') {
+        $buf .= '  <Title>' . qp_phonebook_xml_escape($displayName) . "</Title>\n";
+        $buf .= "  <Prompt>Select a contact</Prompt>\n";
+    }
+    foreach ($contacts as $c) {
+        $buf .= "  <DirectoryEntry>\n";
+        $buf .= '    <Name>' . qp_phonebook_xml_escape($c['name'] ?? '') . "</Name>\n";
+        $buf .= '    <Telephone>' . qp_phonebook_xml_escape($c['number'] ?? '') . "</Telephone>\n";
+        $buf .= "  </DirectoryEntry>\n";
+    }
+    $buf .= "</CiscoIPPhoneDirectory>\n";
+    return $buf;
+}
+
+/**
+ * Persist phonebook XML for a device MAC. Returns filename or null if empty.
+ */
+function qp_save_phonebook_for_device(array $device, array $contacts = null) {
+    $mac = preg_replace('/[^A-Fa-f0-9]/', '', strtoupper($device['mac'] ?? ''));
+    if (strlen($mac) !== 12) {
+        return null;
+    }
+    if ($contacts === null) {
+        $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
+    }
+    $dir = __DIR__ . '/assets/phonebook';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    $filename = 'pb_' . $mac . '.xml';
+    $path = $dir . '/' . $filename;
+    if (empty($contacts)) {
+        if (is_file($path)) {
+            @unlink($path);
+        }
+        return null;
+    }
+    $xml = qp_generate_phonebook_xml($contacts, $device['model'] ?? '', $device['extension'] ?? '');
+    if (file_put_contents($path, $xml) === false) {
+        error_log("Quick-Provisioner: Failed to write phonebook $path");
+        return null;
+    }
+    @chmod($path, 0664);
+    return $filename;
+}
+
+/**
+ * Build the HTTP URL phones use to fetch a device phonebook.
+ */
+function qp_build_phonebook_url($mac) {
+    $mac = preg_replace('/[^A-Fa-f0-9]/', '', strtoupper((string)$mac));
+    if (strlen($mac) !== 12) {
+        return '';
+    }
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    return "$protocol://$host/admin/modules/quickprovisioner/provision.php?mac=$mac&type=phonebook";
 }

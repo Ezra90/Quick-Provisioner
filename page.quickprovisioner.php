@@ -43,7 +43,7 @@ if (!isset($_SESSION['qp_csrf'])) {
 $csrf_token = $_SESSION['qp_csrf'];
 ?>
 <div class="container-fluid">
-    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.1</small></h1>
+    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.2</small></h1>
 
     <ul class="nav nav-tabs" role="tablist">
         <li class="active"><a data-toggle="tab" href="#tab-devices" onclick="loadDevices()">Devices</a></li>
@@ -268,7 +268,14 @@ $csrf_token = $_SESSION['qp_csrf'];
 
                                     <!-- Contacts Sub-Tab -->
                                     <div id="sub-contacts" class="tab-pane fade">
-                                        <button type="button" class="btn btn-success btn-sm" onclick="addContact()"><i class="fa fa-plus"></i> Add Contact</button>
+                                        <p class="text-muted" style="margin-bottom:10px;">
+                                            Build a remote phonebook for this handset. Import FreePBX extensions (name + number),
+                                            then add or rename custom contacts. Names are editable; the phone downloads vendor XML on provision.
+                                        </p>
+                                        <button type="button" class="btn btn-primary btn-sm" onclick="importFreepbxExtensions()"><i class="fa fa-download"></i> Import FreePBX Extensions</button>
+                                        <button type="button" class="btn btn-default btn-sm" onclick="refreshFreepbxNames()" title="Update names for imported extensions from FreePBX"><i class="fa fa-refresh"></i> Refresh FreePBX Names</button>
+                                        <button type="button" class="btn btn-success btn-sm" onclick="addContact()"><i class="fa fa-plus"></i> Add Custom Contact</button>
+                                        <button type="button" class="btn btn-warning btn-sm" onclick="clearAllContacts()"><i class="fa fa-trash"></i> Clear All</button>
                                         <div id="contactsList" style="margin-top:10px;"></div>
                                     </div>
                                 </div>
@@ -363,7 +370,7 @@ $csrf_token = $_SESSION['qp_csrf'];
                     <div class="panel panel-info">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-cloud-download"></i> Module Updates</h3></div>
                         <div class="panel-body">
-                            <p><strong>Version:</strong> <span id="currentVersion">0.1.1</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
+                            <p><strong>Version:</strong> <span id="currentVersion">0.1.2</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
                             <button class="btn btn-primary" onclick="checkForUpdates()" id="checkUpdatesBtn"><i class="fa fa-search"></i> Check for Updates</button>
                             <div id="updateStatus" style="margin-top:15px; display:none;">
                                 <div id="updateMsg"></div>
@@ -423,8 +430,10 @@ $csrf_token = $_SESSION['qp_csrf'];
       <div class="modal-header"><h4>Edit Contact <span id="contactIdx"></span></h4></div>
       <div class="modal-body">
         <input type="hidden" id="contactId">
-        <div class="form-group"><label>Name</label><input type="text" id="contactName" class="form-control"></div>
-        <div class="form-group"><label>Number</label><input type="text" id="contactNumber" class="form-control"></div>
+        <input type="hidden" id="contactSource" value="custom">
+        <div class="form-group"><label>Name</label><input type="text" id="contactName" class="form-control" placeholder="Display name"></div>
+        <div class="form-group"><label>Number</label><input type="text" id="contactNumber" class="form-control" placeholder="Extension or phone number"></div>
+        <p class="help-block">Imported FreePBX rows keep the extension number; you can rename the display name. Custom contacts can use any number.</p>
         <button class="btn btn-primary" onclick="saveContact()">Save</button>
         <button class="btn btn-warning" onclick="clearContact()">Clear</button>
       </div>
@@ -967,26 +976,90 @@ function delWpAsset(fn) {
     });
 }
 
-// ===================== CONTACTS =====================
+// ===================== CONTACTS / PHONEBOOK =====================
 function loadContacts() {
-    var html = '<table class="table table-striped table-condensed"><thead><tr><th>Name</th><th>Number</th><th>Actions</th></tr></thead><tbody>';
+    var html = '<table class="table table-striped table-condensed"><thead><tr><th>Name</th><th>Number</th><th>Source</th><th>Actions</th></tr></thead><tbody>';
     currentContacts.forEach(function(c, i) {
-        html += '<tr><td>'+esc(c.name||'')+'</td><td>'+esc(c.number||'')+'</td>';
-        html += '<td><button class="btn btn-xs btn-default" onclick="editContact('+i+')">Edit</button> <button class="btn btn-xs btn-danger" onclick="removeContact('+i+')">Del</button></td></tr>';
+        var src = c.source || 'custom';
+        var badge = src === 'freepbx' ? '<span class="label label-info">FreePBX</span>' : '<span class="label label-default">Custom</span>';
+        html += '<tr><td>'+esc(c.name||'')+'</td><td>'+esc(c.number||'')+'</td><td>'+badge+'</td>';
+        html += '<td><button type="button" class="btn btn-xs btn-default" onclick="editContact('+i+')">Edit</button> <button type="button" class="btn btn-xs btn-danger" onclick="removeContact('+i+')">Del</button></td></tr>';
     });
     html += '</tbody></table>';
-    if (!currentContacts.length) html = '<p class="text-muted">No contacts. Click Add Contact.</p>';
+    if (!currentContacts.length) html = '<p class="text-muted">No contacts yet. Import FreePBX extensions and/or add custom contacts, then Save Device.</p>';
     $('#contactsList').html(html);
 }
-function addContact() { $('#contactIdx').text(currentContacts.length); $('#contactName').val(''); $('#contactNumber').val(''); $('#contactModal').modal('show'); }
-function editContact(i) { $('#contactIdx').text(i); var c=currentContacts[i]||{}; $('#contactName').val(c.name||''); $('#contactNumber').val(c.number||''); $('#contactModal').modal('show'); }
-function saveContact() {
-    var i=parseInt($('#contactIdx').text()), c={name:$('#contactName').val(), number:$('#contactNumber').val()};
-    if (i < currentContacts.length) currentContacts[i]=c; else currentContacts.push(c);
-    loadContacts(); $('#contactModal').modal('hide');
+function addContact() {
+    $('#contactIdx').text(currentContacts.length);
+    $('#contactName').val('');
+    $('#contactNumber').val('');
+    $('#contactSource').val('custom');
+    $('#contactModal').modal('show');
 }
-function removeContact(i) { if(confirm('Remove?')) { currentContacts.splice(i,1); loadContacts(); } }
+function editContact(i) {
+    $('#contactIdx').text(i);
+    var c = currentContacts[i] || {};
+    $('#contactName').val(c.name || '');
+    $('#contactNumber').val(c.number || '');
+    $('#contactSource').val(c.source || 'custom');
+    $('#contactModal').modal('show');
+}
+function saveContact() {
+    var i = parseInt($('#contactIdx').text(), 10);
+    var c = {
+        name: ($('#contactName').val() || '').trim(),
+        number: ($('#contactNumber').val() || '').trim(),
+        source: $('#contactSource').val() || 'custom'
+    };
+    if (!c.name && !c.number) { alert('Enter a name and/or number'); return; }
+    if (!c.name) c.name = c.number;
+    if (i < currentContacts.length) currentContacts[i] = c; else currentContacts.push(c);
+    loadContacts();
+    $('#contactModal').modal('hide');
+}
+function removeContact(i) { if (confirm('Remove this contact?')) { currentContacts.splice(i, 1); loadContacts(); } }
 function clearContact() { $('#contactName').val(''); $('#contactNumber').val(''); }
+function clearAllContacts() {
+    if (!currentContacts.length) return;
+    if (confirm('Remove all contacts from this device?')) { currentContacts = []; loadContacts(); }
+}
+function _contactNumberKey(n) { return String(n || '').replace(/\s+/g, ''); }
+function importFreepbxExtensions() {
+    ajax('list_freepbx_extensions', {}, function(r) {
+        if (!r.status) { alert(r.message || 'Failed to load extensions'); return; }
+        var existing = {};
+        currentContacts.forEach(function(c) { existing[_contactNumberKey(c.number)] = true; });
+        var added = 0;
+        (r.extensions || []).forEach(function(ext) {
+            var num = String(ext.extension || '');
+            if (!num || existing[_contactNumberKey(num)]) return;
+            currentContacts.push({
+                name: ext.name || num,
+                number: num,
+                source: 'freepbx'
+            });
+            existing[_contactNumberKey(num)] = true;
+            added++;
+        });
+        loadContacts();
+        alert(added ? ('Imported ' + added + ' FreePBX extension(s). Save the device to apply.') : 'No new extensions to import (all already present).');
+    });
+}
+function refreshFreepbxNames() {
+    ajax('list_freepbx_extensions', {}, function(r) {
+        if (!r.status) { alert(r.message || 'Failed to load extensions'); return; }
+        var byExt = {};
+        (r.extensions || []).forEach(function(ext) { byExt[_contactNumberKey(ext.extension)] = ext.name || ext.extension; });
+        var updated = 0;
+        currentContacts.forEach(function(c) {
+            if ((c.source || '') !== 'freepbx') return;
+            var key = _contactNumberKey(c.number);
+            if (byExt[key] && c.name !== byExt[key]) { c.name = byExt[key]; updated++; }
+        });
+        loadContacts();
+        alert(updated ? ('Updated ' + updated + ' FreePBX name(s). Save the device to apply.') : 'No FreePBX names needed updating.');
+    });
+}
 
 // ===================== FILE MANAGER =====================
 function loadAllFiles() { loadAssets(); loadRingtones(); loadFirmware(); }

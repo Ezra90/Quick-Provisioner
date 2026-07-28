@@ -215,6 +215,13 @@
     device.syslog.renderLevel="5"
   />
 {{/has_syslog}}
+{{#remote_phonebooks}}
+  <dir
+    dir.corp.address="{{url}}"
+    dir.corp.name="{{name}}"
+    feature.corporateDirectory.enabled="1"
+  />
+{{/remote_phonebooks}}
   <DEVICE
     device.auth.localAdminPassword="{{admin_password}}"
     device.prov.serverName="{{provisioning_url}}"

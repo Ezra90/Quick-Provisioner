@@ -147,6 +147,9 @@ switch ($action) {
         
         $keys_json = $_POST['keys_json'] ?? '[]';
         $contacts_json = $_POST['contacts_json'] ?? '[]';
+        // Normalize contact shape: {name, number, source}
+        $contacts_norm = qp_normalize_contacts($contacts_json);
+        $contacts_json = json_encode($contacts_norm);
         $custom_options_json = json_encode($form['custom_options'] ?? []);
         $custom_template_override = $form['custom_template_override'] ?? '';
         $wallpaper = $form['wallpaper'] ?? '';
@@ -170,11 +173,46 @@ switch ($action) {
                 $params = [$form['mac'], $form['model'], $form['extension'], $wallpaper, $wallpaper_mode, $security_pin, $keys_json, $contacts_json, $custom_options_json, $custom_template_override, $prov_username, $prov_password, $custom_sip_secret];
             }
             qp_db_exec($sql, $params);
+            // Persist vendor phonebook XML for this MAC
+            $saved = [
+                'mac' => $form['mac'],
+                'model' => $form['model'],
+                'extension' => $form['extension'],
+                'contacts_json' => $contacts_json,
+            ];
+            qp_save_phonebook_for_device($saved, $contacts_norm);
             \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device saved: MAC=" . $form['mac']);
             $response = ['status' => true];
         } catch (Exception $e) {
             error_log("Quick-Provisioner: Error saving device - " . $e->getMessage());
             $response['message'] = 'Database error: Failed to save device';
+        }
+        break;
+
+    case 'list_freepbx_extensions':
+        // Returns FreePBX extensions for phonebook import: [{extension, name}]
+        $list = [];
+        try {
+            $users = \FreePBX::Core()->getAllUsers();
+            if (is_array($users)) {
+                foreach ($users as $user) {
+                    $ext = $user['extension'] ?? '';
+                    if ($ext === '') {
+                        continue;
+                    }
+                    $list[] = [
+                        'extension' => (string)$ext,
+                        'name' => (string)($user['name'] ?? $ext),
+                    ];
+                }
+            }
+            usort($list, function ($a, $b) {
+                return strnatcmp($a['extension'], $b['extension']);
+            });
+            $response = ['status' => true, 'extensions' => $list];
+        } catch (Exception $e) {
+            error_log("Quick-Provisioner: list_freepbx_extensions failed - " . $e->getMessage());
+            $response['message'] = 'Failed to load FreePBX extensions';
         }
         break;
 
@@ -318,6 +356,8 @@ switch ($action) {
             'secret'           => $secret,
             'wallpaper_url'    => $wpUrl,
             'provisioning_url' => '',
+            'phonebook_url'    => qp_build_phonebook_url($device['mac'] ?? ''),
+            'phonebook_name'   => 'Directory',
         ];
         $context = qp_build_provisioning_context($device, $meta, $server_info);
 
