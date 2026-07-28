@@ -402,7 +402,7 @@ switch ($action) {
             $render_source = $device['custom_template_override'];
         } else {
             // Strip META block from template before rendering
-            $render_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*?\}\s*\}\}\s*/', '', $template_source);
+            $render_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*\}\s*\}\}\s*/', '', $template_source);
         }
 
         $config = qp_render_mustache($render_source, $context);

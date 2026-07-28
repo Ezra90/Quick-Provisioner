@@ -396,7 +396,7 @@ qp_save_phonebook_for_device($device);
 $context = qp_build_provisioning_context($device, $meta, $server_info);
 
 // Strip the META comment block so it doesn't appear in the output
-$template_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*?\}\s*\}\}\s*/', '', $source);
+$template_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*\}\s*\}\}\s*/', '', $source);
 
 $output = qp_render_mustache($template_source, $context);
 

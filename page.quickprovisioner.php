@@ -446,9 +446,41 @@ $csrf_token = $_SESSION['qp_csrf'];
     <div class="modal-content">
       <div class="modal-header"><h4>Edit Key <span id="keyIndex"></span></h4></div>
       <div class="modal-body">
-        <div class="form-group"><label>Type</label><select id="keyType" class="form-control"><option value="line">Line</option><option value="speed_dial">Speed Dial</option><option value="blf">BLF</option></select></div>
-        <div class="form-group"><label>Value</label><input type="text" id="keyValue" class="form-control"></div>
-        <div class="form-group"><label>Label</label><input type="text" id="keyLabel" class="form-control"></div>
+        <div class="form-group">
+          <label>Type</label>
+          <select id="keyType" class="form-control">
+            <option value="line">Line</option>
+            <option value="speed_dial">Speed Dial</option>
+            <option value="blf">BLF</option>
+          </select>
+        </div>
+        <div class="form-group" id="keyExtPickGroup">
+          <label>FreePBX Extension</label>
+          <div class="input-group">
+            <select id="keyExtSelect" class="form-control">
+              <option value="">— Select extension —</option>
+              <option value="__custom__">Custom / manual…</option>
+            </select>
+            <span class="input-group-btn">
+              <button type="button" class="btn btn-default" id="keyExtRefresh" title="Reload FreePBX extensions"><i class="fa fa-refresh"></i></button>
+            </span>
+          </div>
+          <small class="text-muted">Pick an extension to fill Value. Label defaults to the FreePBX name — you can override it.</small>
+        </div>
+        <div class="form-group">
+          <label>Value <small class="text-muted">(extension / number dialled)</small></label>
+          <input type="text" id="keyValue" class="form-control" placeholder="e.g. 101">
+        </div>
+        <div class="form-group">
+          <label>Label <small class="text-muted">(shown on the phone button)</small></label>
+          <div class="input-group">
+            <input type="text" id="keyLabel" class="form-control" placeholder="Custom name or leave FreePBX name">
+            <span class="input-group-btn">
+              <button type="button" class="btn btn-default" id="keyLabelUseName" title="Use FreePBX name for this extension"><i class="fa fa-user"></i></button>
+            </span>
+          </div>
+          <small class="text-muted" id="keyLabelHint"></small>
+        </div>
         <button class="btn btn-primary" onclick="saveKey()">Save</button>
         <button class="btn btn-warning" onclick="clearKey()">Clear</button>
       </div>
@@ -494,6 +526,8 @@ var templateSources = {};
 var smartDialShortcuts = {};
 var isExpandedView = false;
 var csrf = '<?= $csrf_token ?>';
+var freepbxExtensions = <?= json_encode($extensions, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS) ?>;
+var keyLabelCustomised = false;
 
 function ajax(cmd, data, cb) {
     data = data || {};
@@ -917,6 +951,17 @@ function updatePageSelect() {
     }
 }
 
+function decodeChassisSvg(ve) {
+    if (!ve) return null;
+    if (ve.chassis_svg && String(ve.chassis_svg).trim()) return String(ve.chassis_svg);
+    if (ve.chassis_svg_b64 && String(ve.chassis_svg_b64).trim()) {
+        try {
+            return atob(String(ve.chassis_svg_b64).replace(/\s+/g, ''));
+        } catch (e) { return null; }
+    }
+    return null;
+}
+
 function renderPreview() {
     var model = $('#model').val(), p = profiles[model];
     if (!p || !p.visual_editor) return;
@@ -925,8 +970,14 @@ function renderPreview() {
     var c = $('#previewContainer');
     c.empty().css({width:ve.schematic.chassis_width+'px', height:ve.schematic.chassis_height+'px', position:'relative'});
     var dn = p.display_name || model;
-    var svg = generatePhoneSVG(ve.schematic, dn, page, total);
-    c.css({backgroundImage:'url(data:image/svg+xml;base64,'+btoa(svg)+')', backgroundSize:'contain', backgroundRepeat:'no-repeat'});
+    var chassis = decodeChassisSvg(ve);
+    var svg = chassis || generatePhoneSVG(ve.schematic, dn, page, total);
+    // Prefer base64 of UTF-8-safe SVG for unicode-free chassis art
+    try {
+        c.css({backgroundImage:'url(data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svg)))+')', backgroundSize:'contain', backgroundRepeat:'no-repeat', backgroundPosition:'center top'});
+    } catch (e) {
+        c.css({backgroundImage:'url(data:image/svg+xml;base64,'+btoa(svg)+')', backgroundSize:'contain', backgroundRepeat:'no-repeat', backgroundPosition:'center top'});
+    }
 
     var wp = $('#wallpaper').val();
     if (wp) {
@@ -954,6 +1005,21 @@ function renderPreview() {
         $('<button>').css({position:'absolute', left:key.x+'px', top:key.y+'px', width:(key.width||44)+'px', height:(key.height||24)+'px', textAlign:'center', fontSize:'9px', padding:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', borderRadius:'3px', border:'1px solid '+bc, backgroundColor:bg, color:has?'#fff':'#aaa', cursor:'pointer', fontWeight:has?'bold':'normal', lineHeight:((key.height||24)-4)+'px'}).text(lbl).click(function(){editKey(key.index);}).appendTo(kl);
     });
 
+    // Soft-key chrome from template (hardware under-screen keys)
+    (ve.soft_keys || []).forEach(function(sk) {
+        var $btn = $('<div>').css({
+            position:'absolute', left:sk.x+'px', top:sk.y+'px',
+            width:(sk.width||48)+'px', height:(sk.height||20)+'px',
+            textAlign:'center', fontSize:'9px', lineHeight:((sk.height||20)-2)+'px',
+            borderRadius:'3px', border:'1px solid rgba(150,150,150,0.45)',
+            backgroundColor:'rgba(40,40,40,0.75)', color:'#ccc', overflow:'hidden'
+        }).text(sk.label || '');
+        if (sk.programmable && sk.index) {
+            $btn.css({cursor:'pointer', backgroundColor:'rgba(60,80,100,0.85)'}).click(function(){ editKey(sk.index); });
+        }
+        $btn.appendTo(kl);
+    });
+
     // Page nav buttons
     if (!ve.expandable_layout && total > 1) {
         var ny = ve.schematic.screen_y + ve.schematic.screen_height + 10, nx = ve.schematic.chassis_width/2;
@@ -965,11 +1031,18 @@ function renderPreview() {
 function editKey(idx) {
     $('#keyIndex').text(idx);
     var k = currentKeys.find(function(x){return x.index===idx;}) || {};
-    $('#keyType').val(k.type||'line'); $('#keyValue').val(k.value||''); $('#keyLabel').val(k.label||'');
+    keyLabelCustomised = !!(k.label && String(k.label).length);
+    $('#keyType').val(k.type||'line');
+    $('#keyValue').val(k.value||'');
+    $('#keyLabel').val(k.label||'');
+    populateKeyExtSelect();
+    syncKeyExtSelectFromValue();
+    updateKeyExtUi();
+    updateKeyLabelHint();
     $('#keyModal').modal('show');
 }
 function saveKey() {
-    var idx = parseInt($('#keyIndex').text()), t=$('#keyType').val(), v=$('#keyValue').val(), l=$('#keyLabel').val();
+    var idx = parseInt($('#keyIndex').text()), t=$('#keyType').val(), v=$.trim($('#keyValue').val()), l=$.trim($('#keyLabel').val());
     var ex = currentKeys.find(function(k){return k.index===idx;});
     if (ex) { ex.type=t; ex.value=v; ex.label=l; } else currentKeys.push({index:idx, type:t, value:v, label:l});
     renderPreview(); $('#keyModal').modal('hide');
@@ -979,6 +1052,122 @@ function clearKey() {
     currentKeys = currentKeys.filter(function(k){return k.index!==idx;});
     renderPreview(); $('#keyModal').modal('hide');
 }
+
+function freepbxExtName(ext) {
+    ext = String(ext || '');
+    for (var i = 0; i < (freepbxExtensions || []).length; i++) {
+        if (String(freepbxExtensions[i].extension) === ext) {
+            return freepbxExtensions[i].name || '';
+        }
+    }
+    return '';
+}
+
+function populateKeyExtSelect() {
+    var $sel = $('#keyExtSelect');
+    var cur = $sel.val();
+    $sel.find('option:not([value=""]):not([value="__custom__"])').remove();
+    (freepbxExtensions || []).forEach(function(row) {
+        var ext = String(row.extension || '');
+        if (!ext) return;
+        var name = row.name || '';
+        var label = name ? (ext + ' — ' + name) : ext;
+        $sel.append($('<option>').attr('value', ext).text(label));
+    });
+    if (cur) $sel.val(cur);
+}
+
+function syncKeyExtSelectFromValue() {
+    var v = $.trim($('#keyValue').val());
+    var $sel = $('#keyExtSelect');
+    if (!v) { $sel.val(''); return; }
+    var found = false;
+    $sel.find('option').each(function() {
+        if (String($(this).attr('value')) === v) found = true;
+    });
+    $sel.val(found ? v : '__custom__');
+}
+
+function updateKeyExtUi() {
+    var t = $('#keyType').val();
+    // Extension picker is most useful for BLF / speed dial; still available for line
+    var show = (t === 'blf' || t === 'speed_dial' || t === 'line');
+    $('#keyExtPickGroup').toggle(!!show);
+}
+
+function updateKeyLabelHint() {
+    var v = $.trim($('#keyValue').val());
+    var known = freepbxExtName(v);
+    var $hint = $('#keyLabelHint');
+    if (known) {
+        $hint.text(keyLabelCustomised
+            ? ('FreePBX name: ' + known + ' (label overridden)')
+            : ('FreePBX name: ' + known));
+        $('#keyLabelUseName').prop('disabled', false);
+    } else {
+        $hint.text(v ? 'No FreePBX match — enter a custom label if needed.' : 'Select an extension or type a value.');
+        $('#keyLabelUseName').prop('disabled', !known);
+    }
+}
+
+function applyKeyExtSelection() {
+    var sel = $('#keyExtSelect').val();
+    if (!sel || sel === '__custom__') {
+        if (sel === '__custom__') {
+            $('#keyValue').focus();
+        }
+        updateKeyLabelHint();
+        return;
+    }
+    $('#keyValue').val(sel);
+    var known = freepbxExtName(sel);
+    if (!keyLabelCustomised) {
+        $('#keyLabel').val(known || sel);
+    }
+    updateKeyLabelHint();
+}
+
+function refreshKeyFreepbxExtensions(cb) {
+    ajax('list_freepbx_extensions', {}, function(r) {
+        if (!r.status) {
+            alert(r.message || 'Failed to load FreePBX extensions');
+            return;
+        }
+        freepbxExtensions = r.extensions || [];
+        populateKeyExtSelect();
+        syncKeyExtSelectFromValue();
+        updateKeyLabelHint();
+        if (typeof cb === 'function') cb();
+    });
+}
+
+$(document).on('change', '#keyType', function() {
+    updateKeyExtUi();
+});
+$(document).on('change', '#keyExtSelect', function() {
+    applyKeyExtSelection();
+});
+$(document).on('input', '#keyValue', function() {
+    syncKeyExtSelectFromValue();
+    updateKeyLabelHint();
+});
+$(document).on('input', '#keyLabel', function() {
+    keyLabelCustomised = true;
+    updateKeyLabelHint();
+});
+$(document).on('click', '#keyLabelUseName', function() {
+    var known = freepbxExtName($.trim($('#keyValue').val()));
+    if (!known) return;
+    $('#keyLabel').val(known);
+    keyLabelCustomised = false;
+    updateKeyLabelHint();
+});
+$(document).on('click', '#keyExtRefresh', function() {
+    refreshKeyFreepbxExtensions();
+});
+
+// Prefill extension dropdown options once DOM is ready
+$(function() { populateKeyExtSelect(); });
 
 // ===================== WALLPAPER =====================
 function updateScreenDims() {

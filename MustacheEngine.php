@@ -73,7 +73,8 @@ function qp_render_mustache($template, $context) {
  * @return string
  */
 function _qp_mustache_render_section($template, $context) {
-    // 1. Strip comments: {{! ... }}
+    // 1. Strip comments: META first (JSON may contain `} }` spaced closes), then others
+    $template = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*\}\s*\}\}/', '', $template);
     $template = preg_replace('/\{\{![\s\S]*?\}\}/', '', $template);
 
     // 2. Process sections (truthy and inverted) from outermost inward.
