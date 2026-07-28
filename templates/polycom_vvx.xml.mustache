@@ -119,12 +119,26 @@
     device.syslog.renderLevel="5"
   />
 {{/has_syslog}}
+{{#has_phonebook}}
+  <!-- Local contact directory: phone fetches {mac}-directory.xml from provisioning server.
+       dir.corp.* is LDAP-only and must NOT point at HTTP XML phonebooks. -->
+  <dir
+    dir.local.readonly="1"
+    feature.directory.enabled="1"
+  />
+  <voIpProt
+    voIpProt.SIP.specialEvent.checkSync.downloadDirectory="1"
+  />
+{{/has_phonebook}}
   <DEVICE
     device.auth.localAdminPassword="{{admin_password}}"
     device.prov.serverName="{{provisioning_url}}"
     device.prov.serverType="HTTP"
     device.prov.user="{{provision_user}}"
     device.prov.password="{{provision_pass}}"
+{{#has_polycom_contacts_directory}}
+    device.prov.contactsDirectory="{{polycom_contacts_directory}}"
+{{/has_polycom_contacts_directory}}
 {{#has_web_ui}}
     device.web.enabled="{{web_ui_enabled}}"
 {{/has_web_ui}}
