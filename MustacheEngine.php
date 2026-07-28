@@ -374,7 +374,11 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $backupServer    = $custom_options['backup_server'] ?? '';
     $backupPort      = $custom_options['backup_port'] ?? '5060';
     $wallpaperUrl    = $server_info['wallpaper_url'] ?? '';
-    $provisioningUrl = $server_info['provisioning_url'] ?? '';
+    $provUrls        = $server_info['provisioning_base'] ?? null
+        ? ['provisioning_base' => $server_info['provisioning_base'], 'provisioning_url' => $server_info['provisioning_url'] ?? '']
+        : qp_build_provisioning_urls($mac);
+    $provisioningUrl = $provUrls['provisioning_url'];
+    $provisioningBase = $provUrls['provisioning_base'];
     $provUser        = $device['prov_username'] ?? '';
     $provPass        = $device['prov_password'] ?? '';
     $securityPin     = $device['security_pin'] ?? '';
@@ -560,6 +564,8 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'admin_password'    => $adminPassword,
         'wallpaper_url'     => $wallpaperUrl,
         'provisioning_url'  => $provisioningUrl,
+        'provisioning_base' => $provisioningBase,
+        'has_provisioning_base' => ($provisioningBase !== ''),
         'provision_user'    => $provUser,
         'provision_pass'    => $provPass,
 
@@ -925,6 +931,23 @@ function qp_resolve_sip_port(array $custom_options = []) {
     } catch (Exception $e) {
         return '5060';
     }
+}
+
+/**
+ * Build provisioning URLs used in handset templates.
+ *
+ * - provisioning_base: RPS-style directory (trailing slash). Phones fetch {MAC}.cfg / {MAC}.xml.
+ * - provisioning_url: explicit resync URL with ?mac= (Yealink check-sync, bootstrap handoff).
+ */
+function qp_build_provisioning_urls($mac) {
+    $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    $script = "$protocol://$host/admin/modules/quickprovisioner/provision.php";
+    return [
+        'provisioning_base' => $script . '/',
+        'provisioning_url'  => $script . '?mac=' . rawurlencode($mac),
+    ];
 }
 
 /**
