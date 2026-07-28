@@ -37,7 +37,7 @@
 <!-- Provisioning Configuration -->
 <Provision_Enable>Yes</Provision_Enable>
 <Resync_On_Reset>Yes</Resync_On_Reset>
-<Profile_Rule>{{provisioning_url}}/{{mac_address}}.xml</Profile_Rule>
+<Profile_Rule>{{provisioning_base}}{{mac_address}}.xml</Profile_Rule>
 
 {{#has_firmware}}
 <!-- Firmware Upgrade -->
