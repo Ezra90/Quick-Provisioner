@@ -25,10 +25,17 @@ try {
     $users = \FreePBX::Core()->getAllUsers();
     if ($users && is_array($users)) {
         foreach ($users as $user) {
-            if (isset($user['extension'])) {
-                $extensions[] = $user['extension'];
+            if (!isset($user['extension']) || $user['extension'] === '') {
+                continue;
             }
+            $extensions[] = [
+                'extension' => (string)$user['extension'],
+                'name' => (string)($user['name'] ?? ''),
+            ];
         }
+        usort($extensions, function ($a, $b) {
+            return strnatcmp($a['extension'], $b['extension']);
+        });
     }
 } catch (Exception $e) {
     error_log("Quick-Provisioner: Failed to fetch extensions - " . $e->getMessage());
@@ -43,7 +50,7 @@ if (!isset($_SESSION['qp_csrf'])) {
 $csrf_token = $_SESSION['qp_csrf'];
 ?>
 <div class="container-fluid">
-    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.4</small></h1>
+    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.5</small></h1>
 
     <ul class="nav nav-tabs" role="tablist">
         <li class="active"><a data-toggle="tab" href="#tab-devices" onclick="loadDevices()">Devices</a></li>
@@ -89,8 +96,12 @@ $csrf_token = $_SESSION['qp_csrf'];
                                         <div class="input-group">
                                             <select id="extension_select" class="form-control" onchange="extSelChanged()">
                                                 <option value="">-- Select Extension --</option>
-                                                <?php foreach ($extensions as $ext): ?>
-                                                <option value="<?= htmlspecialchars($ext) ?>"><?= htmlspecialchars($ext) ?></option>
+                                                <?php foreach ($extensions as $row):
+                                                    $ext = $row['extension'];
+                                                    $name = $row['name'];
+                                                    $label = $name !== '' ? ($ext . ' — ' . $name) : $ext;
+                                                ?>
+                                                <option value="<?= htmlspecialchars($ext) ?>" data-name="<?= htmlspecialchars($name) ?>"><?= htmlspecialchars($label) ?></option>
                                                 <?php endforeach; ?>
                                             </select>
                                             <span class="input-group-btn"><button type="button" class="btn btn-default" onclick="toggleCustomExt()" title="Custom"><i class="fa fa-edit"></i></button></span>
@@ -148,7 +159,11 @@ $csrf_token = $_SESSION['qp_csrf'];
                                 <!-- Provisioning Auth -->
                                 <div class="form-group">
                                     <label>Provisioning Username</label>
-                                    <input type="text" id="prov_username" name="prov_username" class="form-control" placeholder="For remote provisioning">
+                                    <div class="input-group">
+                                        <input type="text" id="prov_username" name="prov_username" class="form-control" placeholder="For remote provisioning">
+                                        <span class="input-group-btn"><button type="button" class="btn btn-default" onclick="genProvUser()" title="Generate from extension + name">Generate</button></span>
+                                    </div>
+                                    <small class="text-muted">Generate builds <code>ext_name</code> from the selected FreePBX extension (qsetup-friendly).</small>
                                 </div>
                                 <div class="form-group">
                                     <label>Provisioning Password</label>
@@ -388,7 +403,7 @@ $csrf_token = $_SESSION['qp_csrf'];
                     <div class="panel panel-info">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-cloud-download"></i> Module Updates</h3></div>
                         <div class="panel-body">
-                            <p><strong>Version:</strong> <span id="currentVersion">0.1.4</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
+                            <p><strong>Version:</strong> <span id="currentVersion">0.1.5</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
                             <button class="btn btn-primary" onclick="checkForUpdates()" id="checkUpdatesBtn"><i class="fa fa-search"></i> Check for Updates</button>
                             <div id="updateStatus" style="margin-top:15px; display:none;">
                                 <div id="updateMsg"></div>
@@ -786,6 +801,43 @@ function genProvPass() {
     if (window.crypto) { var r = new Uint8Array(16); crypto.getRandomValues(r); for (var i=0;i<16;i++) p += c.charAt(r[i] % c.length); }
     else { for (var i=0;i<16;i++) p += c.charAt(Math.floor(Math.random()*c.length)); }
     $('#prov_password').val(p);
+}
+
+/** Slugify a display name for use in provisioning usernames. */
+function qpSlugName(name) {
+    return String(name || '')
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '')
+        .replace(/^-+|-+$/g, '')
+        .substring(0, 24);
+}
+
+/**
+ * Generate qsetup-style provisioning username: {ext}_{nameSlug}
+ * Falls back to ext{ext} when no FreePBX name is available.
+ */
+function genProvUser() {
+    var ext = ($('#extension').val() || '').trim();
+    if (!ext) {
+        // Prefer select, then custom field
+        ext = ($('#extension_select').val() || $('#extension_custom').val() || '').trim();
+    }
+    if (!ext) {
+        alert('Select or enter an extension first');
+        return;
+    }
+    var name = '';
+    var $opt = $('#extension_select option:selected');
+    if ($opt.length && $opt.val() === ext) {
+        name = $opt.attr('data-name') || '';
+    }
+    var slug = qpSlugName(name);
+    var user = slug ? (ext + '_' + slug) : ('ext' + ext);
+    // Keep usernames conservative for phone Basic Auth / URL embedding
+    user = user.replace(/[^A-Za-z0-9._-]/g, '').substring(0, 48);
+    $('#prov_username').val(user);
 }
 
 // ===================== FORM SUBMIT =====================
