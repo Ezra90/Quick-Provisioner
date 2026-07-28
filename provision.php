@@ -45,7 +45,6 @@ function qp_check_device_basic_auth(array $device) {
     $prov_user = $device['prov_username'] ?? '';
     $prov_pass = $device['prov_password'] ?? '';
     if ($prov_user === '' || $prov_pass === '') {
-        // Always require credentials for remote access when no per-device auth configured
         header('WWW-Authenticate: Basic realm="Phone Provisioning"');
         header('HTTP/1.0 401 Unauthorized');
         die('Authentication required');
@@ -60,10 +59,68 @@ function qp_check_device_basic_auth(array $device) {
     return true;
 }
 
+/**
+ * For shared assets (ringtones/firmware): require local net OR Basic Auth that
+ * matches any Quick-Provisioner device with provisioning credentials set.
+ * Returns the matched device row or true on local network.
+ */
+function qp_check_asset_basic_auth($preferred_mac = null) {
+    if (qp_is_local_network()) {
+        return true;
+    }
+    $user = $_SERVER['PHP_AUTH_USER'] ?? '';
+    $pass = $_SERVER['PHP_AUTH_PW'] ?? '';
+    if ($user === '' || $pass === '') {
+        header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+        header('HTTP/1.0 401 Unauthorized');
+        die('Authentication required');
+    }
+
+    // Prefer binding auth to a specific MAC when known (phonebook files).
+    if ($preferred_mac) {
+        $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', $preferred_mac));
+        $stmt = \FreePBX::Database()->prepare("SELECT * FROM quickprovisioner_devices WHERE mac=?");
+        $stmt->execute([$mac]);
+        $device = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($device) {
+            qp_check_device_basic_auth($device);
+            return $device;
+        }
+        http_response_code(404);
+        die('Device not found');
+    }
+
+    $stmt = \FreePBX::Database()->query(
+        "SELECT * FROM quickprovisioner_devices WHERE prov_username IS NOT NULL AND prov_username != '' AND prov_password IS NOT NULL AND prov_password != ''"
+    );
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if (hash_equals((string)$row['prov_username'], $user) && hash_equals((string)$row['prov_password'], $pass)) {
+            return $row;
+        }
+    }
+    header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+    header('HTTP/1.0 401 Unauthorized');
+    die('Authentication required');
+}
+
+/**
+ * Extract MAC from phonebook filenames: pb_AABBCCDDEEFF.xml or aabbccddeeff-directory.xml
+ */
+function qp_mac_from_asset_filename($filename) {
+    $filename = basename((string)$filename);
+    if (preg_match('/^pb_([A-Fa-f0-9]{12})\.xml$/i', $filename, $m)) {
+        return strtoupper($m[1]);
+    }
+    if (preg_match('/^([A-Fa-f0-9]{12})-directory\.xml$/i', $filename, $m)) {
+        return strtoupper($m[1]);
+    }
+    return null;
+}
+
 // ---------------------------------------------------------------------------
-// Dynamic phonebook XML (?mac=...&type=phonebook) — always generated from contacts_json
+// Dynamic phonebook XML (?mac=...&type=phonebook|directory)
 // ---------------------------------------------------------------------------
-if (isset($_GET['type']) && $_GET['type'] === 'phonebook') {
+if (isset($_GET['type']) && in_array($_GET['type'], ['phonebook', 'directory'], true)) {
     $mac = isset($_GET['mac']) ? strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', $_GET['mac'])) : '';
     if (strlen($mac) !== 12 || !ctype_xdigit($mac)) {
         http_response_code(400);
@@ -82,19 +139,50 @@ if (isset($_GET['type']) && $_GET['type'] === 'phonebook') {
         http_response_code(404);
         die('No contacts');
     }
-    $xml = qp_generate_phonebook_xml($contacts, $device['model'] ?? '', $device['extension'] ?? '');
+    // Polycom local directory uses Polycom XML; Yealink/Cisco remote book uses vendor XML
+    $model_for_xml = ($_GET['type'] === 'directory') ? 'VVX250' : ($device['model'] ?? '');
+    $xml = qp_generate_phonebook_xml($contacts, $model_for_xml, $device['extension'] ?? '');
     qp_save_phonebook_for_device($device, $contacts);
+    $out_name = ($_GET['type'] === 'directory') ? (strtolower($mac) . '-directory.xml') : ('pb_' . $mac . '.xml');
     header('Content-Type: application/xml; charset=utf-8');
-    header('Content-Disposition: inline; filename="pb_' . $mac . '.xml"');
+    header('Content-Disposition: inline; filename="' . $out_name . '"');
     qp_log_access(200, $_SERVER['REQUEST_URI'] ?? '', $mac, $device['extension'] ?? '', 'phonebook');
+    echo $xml;
+    exit;
+}
+
+// PATH_INFO / URI style: .../provision.php/aabbccddeeff-directory.xml or .../pb_MAC.xml
+$path_info = $_SERVER['PATH_INFO'] ?? '';
+$request_uri_for_dir = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
+$dir_basename = basename($path_info !== '' ? $path_info : $request_uri_for_dir);
+if ($dir_basename && preg_match('/^([A-Fa-f0-9]{12})-directory\.xml$/i', $dir_basename, $dm)) {
+    $_GET['mac'] = strtoupper($dm[1]);
+    $_GET['type'] = 'directory';
+    // Re-enter directory handler via include logic — simplest: redirect internal
+    $mac = strtoupper($dm[1]);
+    $stmt = \FreePBX::Database()->prepare("SELECT * FROM quickprovisioner_devices WHERE mac=?");
+    $stmt->execute([$mac]);
+    $device = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$device) {
+        http_response_code(404);
+        die('Device not found');
+    }
+    qp_check_device_basic_auth($device);
+    $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
+    if (empty($contacts)) {
+        http_response_code(404);
+        die('No contacts');
+    }
+    $xml = qp_generate_phonebook_xml($contacts, 'VVX250', $device['extension'] ?? '');
+    header('Content-Type: application/xml; charset=utf-8');
+    header('Content-Disposition: inline; filename="' . strtolower($mac) . '-directory.xml"');
+    qp_log_access(200, $request_uri_for_dir, $mac, $device['extension'] ?? '', 'phonebook');
     echo $xml;
     exit;
 }
 
 // ---------------------------------------------------------------------------
 // Asset file serving (ringtones, firmware, phonebook)
-// These endpoints are checked before MAC-based provisioning so that static
-// assets can be served efficiently with the same auth rules.
 // ---------------------------------------------------------------------------
 $request_uri = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
 
@@ -106,35 +194,38 @@ $asset_routes = [
 
 foreach ($asset_routes as $prefix => $route) {
     if ($request_uri && strpos($request_uri, $prefix) !== false) {
-        // Extract filename from the URL path after the prefix
         $pos = strpos($request_uri, $prefix);
         $raw_filename = substr($request_uri, $pos + strlen($prefix));
-        $filename = basename($raw_filename); // prevent directory traversal
+        $filename = basename($raw_filename);
 
         if ($filename === '' || $filename === '.' || $filename === '..') {
             http_response_code(400);
             die('Invalid filename');
         }
 
-        // Auth check: require local network or valid Basic Auth credentials
-        if (!qp_is_local_network()) {
-            $auth_user = $_SERVER['PHP_AUTH_USER'] ?? '';
-            $auth_pass = $_SERVER['PHP_AUTH_PW'] ?? '';
-            if ($auth_user === '' || $auth_pass === '') {
-                header('WWW-Authenticate: Basic realm="Phone Provisioning"');
-                header('HTTP/1.0 401 Unauthorized');
-                die('Authentication required');
+        $mac_hint = qp_mac_from_asset_filename($filename);
+        // Phonebook files must map to a device; shared assets accept any valid device creds
+        if (strpos($prefix, 'phonebook') !== false) {
+            if (!$mac_hint) {
+                http_response_code(400);
+                die('Phonebook filename must include device MAC');
             }
+            qp_check_asset_basic_auth($mac_hint);
+        } else {
+            qp_check_asset_basic_auth(null);
         }
 
         $file_path = $route['dir'] . '/' . $filename;
         $real_path = realpath($file_path);
         $real_dir  = realpath($route['dir']);
 
-        // Verify the resolved path is within the expected asset directory
-        if ($real_path === false || $real_dir === false
-            || strpos($real_path, $real_dir . '/') !== 0
-            || !is_file($real_path)) {
+        if ($real_path === false || $real_dir === false || !is_file($real_path)) {
+            http_response_code(404);
+            die('File not found');
+        }
+        $under_dir = (strpos($real_path, $real_dir . DIRECTORY_SEPARATOR) === 0)
+            || (strpos($real_path, $real_dir . '/') === 0);
+        if (!$under_dir) {
             http_response_code(404);
             die('File not found');
         }
@@ -142,13 +233,12 @@ foreach ($asset_routes as $prefix => $route) {
         $safe_filename = str_replace('"', '\\"', $filename);
         header('Content-Type: ' . $route['type']);
         header('Content-Disposition: attachment; filename="' . $safe_filename . '"');
-        // Determine resource type from prefix
         $rt = 'asset';
         if (strpos($prefix, 'ringtone') !== false) $rt = 'ringtone';
         elseif (strpos($prefix, 'firmware') !== false) $rt = 'firmware';
         elseif (strpos($prefix, 'phonebook') !== false) $rt = 'phonebook';
-        qp_log_access(200, $request_uri, null, null, $rt);
-        readfile($file_path);
+        qp_log_access(200, $request_uri, $mac_hint, null, $rt);
+        readfile($real_path);
         exit;
     }
 }
@@ -256,8 +346,20 @@ if (!empty($device['custom_sip_secret'])) {
     }
 }
 
-$server_ip = $_SERVER['SERVER_ADDR'] ?? '';
-$sip_port = \FreePBX::Sipsettings()->get('bindport') ?? '5060';
+$server_ip = qp_resolve_sip_server([]);
+$sip_port = qp_resolve_sip_port([]);
+
+// Per-device custom_options may still override inside qp_build_provisioning_context
+$custom_opts = [];
+if (!empty($device['custom_options_json'])) {
+    $custom_opts = json_decode($device['custom_options_json'], true) ?: [];
+}
+if (!empty($custom_opts['sip_server'])) {
+    $server_ip = $custom_opts['sip_server'];
+}
+if (!empty($custom_opts['sip_port'])) {
+    $sip_port = $custom_opts['sip_port'];
+}
 
 // Build wallpaper URL if the device has a wallpaper configured
 $wallpaper_url = '';
@@ -282,6 +384,7 @@ $server_info = [
     'provisioning_url' => $provisioning_url,
     'phonebook_url'    => qp_build_phonebook_url($mac),
     'phonebook_name'   => 'Directory',
+    'polycom_contacts_directory' => qp_build_polycom_contacts_directory_url(),
 ];
 
 // Keep on-disk phonebook XML in sync for PATH_INFO / static fetches

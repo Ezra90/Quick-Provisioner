@@ -323,8 +323,12 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $mac        = $device['mac'] ?? '';
     $model      = $device['model'] ?? '';
     $extension  = $device['extension'] ?? '';
+    // Prefer explicit server_info, else resolve from globals / host
     $sipServer  = $server_info['server_ip'] ?? '';
-    $sipPort    = $custom_options['sip_port']  ?? $server_info['sip_port'] ?? '5060';
+    if ($sipServer === '') {
+        $sipServer = qp_resolve_sip_server($custom_options);
+    }
+    $sipPort    = $custom_options['sip_port']  ?? $server_info['sip_port'] ?? qp_resolve_sip_port($custom_options);
     $transport  = $custom_options['transport'] ?? 'UDP';
     $displayName = $server_info['display_name'] ?? $extension;
     $secret     = $server_info['secret'] ?? '';
@@ -565,6 +569,8 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'has_phonebook'     => !empty($remotePhonebooks),
         'phonebook_url'     => $phonebookUrl,
         'remote_phonebooks' => $remotePhonebooks,
+        'polycom_contacts_directory' => $server_info['polycom_contacts_directory'] ?? '',
+        'has_polycom_contacts_directory' => !empty($server_info['polycom_contacts_directory']) && !empty($contactEntries),
         'attendant_keys'    => $attendantKeys,
         'expansion_keys'    => [],
     ];
@@ -770,21 +776,96 @@ function qp_save_phonebook_for_device(array $device, array $contacts = null) {
     if (!is_dir($dir)) {
         @mkdir($dir, 0775, true);
     }
-    $filename = 'pb_' . $mac . '.xml';
-    $path = $dir . '/' . $filename;
+    $yealink_name = 'pb_' . $mac . '.xml';
+    $poly_name = strtolower($mac) . '-directory.xml';
+    $yealink_path = $dir . '/' . $yealink_name;
+    $poly_path = $dir . '/' . $poly_name;
+
     if (empty($contacts)) {
-        if (is_file($path)) {
-            @unlink($path);
+        if (is_file($yealink_path)) {
+            @unlink($yealink_path);
+        }
+        if (is_file($poly_path)) {
+            @unlink($poly_path);
         }
         return null;
     }
-    $xml = qp_generate_phonebook_xml($contacts, $device['model'] ?? '', $device['extension'] ?? '');
-    if (file_put_contents($path, $xml) === false) {
-        error_log("Quick-Provisioner: Failed to write phonebook $path");
+
+    // Yealink / Cisco remote phonebook XML
+    $vendor_xml = qp_generate_phonebook_xml($contacts, $device['model'] ?? '', $device['extension'] ?? '');
+    if (file_put_contents($yealink_path, $vendor_xml) === false) {
+        error_log("Quick-Provisioner: Failed to write phonebook $yealink_path");
         return null;
     }
-    @chmod($path, 0664);
-    return $filename;
+    @chmod($yealink_path, 0664);
+
+    // Polycom local contact directory companion file ({mac}-directory.xml)
+    $poly_xml = qp_generate_polycom_phonebook_xml($contacts, $device['extension'] ?? '');
+    if (file_put_contents($poly_path, $poly_xml) !== false) {
+        @chmod($poly_path, 0664);
+    }
+
+    return $yealink_name;
+}
+
+/**
+ * Module-level settings (kvstore via BMO helpers).
+ */
+function qp_get_global_settings() {
+    $defaults = [
+        'sip_server_host' => '',
+        'sip_server_port' => '',
+    ];
+    try {
+        $mod = \FreePBX::Quickprovisioner();
+        foreach ($defaults as $k => $v) {
+            $val = $mod->getConfig($k);
+            if ($val !== false && $val !== null && $val !== '') {
+                $defaults[$k] = (string)$val;
+            }
+        }
+    } catch (Exception $e) {
+        // Module object unavailable during early bootstrap
+    }
+    return $defaults;
+}
+
+/**
+ * Resolve SIP registrar host: per-device custom_options.sip_server >
+ * global sip_server_host > HTTP_HOST hostname > SERVER_ADDR.
+ */
+function qp_resolve_sip_server(array $custom_options = []) {
+    if (!empty($custom_options['sip_server'])) {
+        return trim((string)$custom_options['sip_server']);
+    }
+    $globals = qp_get_global_settings();
+    if (!empty($globals['sip_server_host'])) {
+        return trim($globals['sip_server_host']);
+    }
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    if ($host !== '') {
+        // Strip port if present
+        $host = preg_replace('/:\d+$/', '', $host);
+        if ($host !== '' && $host !== 'localhost' && $host !== '127.0.0.1') {
+            return $host;
+        }
+    }
+    return $_SERVER['SERVER_ADDR'] ?? '';
+}
+
+function qp_resolve_sip_port(array $custom_options = []) {
+    if (!empty($custom_options['sip_port'])) {
+        return (string)$custom_options['sip_port'];
+    }
+    $globals = qp_get_global_settings();
+    if (!empty($globals['sip_server_port'])) {
+        return (string)$globals['sip_server_port'];
+    }
+    try {
+        return (string)(\FreePBX::Sipsettings()->get('bindport') ?? '5060');
+    } catch (Exception $e) {
+        return '5060';
+    }
 }
 
 /**
@@ -798,4 +879,14 @@ function qp_build_phonebook_url($mac) {
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
     return "$protocol://$host/admin/modules/quickprovisioner/provision.php?mac=$mac&type=phonebook";
+}
+
+/**
+ * Base URL directory for Polycom CONTACTS_DIRECTORY-style fetches of {mac}-directory.xml
+ */
+function qp_build_polycom_contacts_directory_url() {
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    // Trailing slash: phone appends {mac}-directory.xml
+    return "$protocol://$host/admin/modules/quickprovisioner/provision.php/";
 }

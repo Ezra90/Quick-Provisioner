@@ -43,7 +43,7 @@ if (!isset($_SESSION['qp_csrf'])) {
 $csrf_token = $_SESSION['qp_csrf'];
 ?>
 <div class="container-fluid">
-    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.2</small></h1>
+    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.3</small></h1>
 
     <ul class="nav nav-tabs" role="tablist">
         <li class="active"><a data-toggle="tab" href="#tab-devices" onclick="loadDevices()">Devices</a></li>
@@ -366,11 +366,29 @@ $csrf_token = $_SESSION['qp_csrf'];
                         </div>
                     </div>
 
+                    <!-- Global SIP / Provisioning -->
+                    <div class="panel panel-default">
+                        <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-globe"></i> Global SIP Server</h3></div>
+                        <div class="panel-body">
+                            <p class="text-muted">Hostname or IP written into handset configs as the SIP registrar. Overrides auto-detected <code>SERVER_ADDR</code>. Per-device Settings still win if set.</p>
+                            <div class="form-group">
+                                <label>SIP Server Host</label>
+                                <input type="text" id="globalSipHost" class="form-control" placeholder="e.g. 192.168.13.241 or pbx.example.com">
+                            </div>
+                            <div class="form-group">
+                                <label>SIP Port (optional)</label>
+                                <input type="text" id="globalSipPort" class="form-control" placeholder="Leave blank to use FreePBX bindport">
+                            </div>
+                            <button type="button" class="btn btn-primary" onclick="saveGlobalSettings()"><i class="fa fa-save"></i> Save Global Settings</button>
+                            <span id="globalSettingsStatus" style="margin-left:10px;"></span>
+                        </div>
+                    </div>
+
                     <!-- Module Updates -->
                     <div class="panel panel-info">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-cloud-download"></i> Module Updates</h3></div>
                         <div class="panel-body">
-                            <p><strong>Version:</strong> <span id="currentVersion">0.1.2</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
+                            <p><strong>Version:</strong> <span id="currentVersion">0.1.3</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
                             <button class="btn btn-primary" onclick="checkForUpdates()" id="checkUpdatesBtn"><i class="fa fa-search"></i> Check for Updates</button>
                             <div id="updateStatus" style="margin-top:15px; display:none;">
                                 <div id="updateMsg"></div>
@@ -1228,11 +1246,38 @@ function clearAccessLog() {
     ajax('clear_access_log', {}, function(r) { if(r.status) loadAccessLog(); });
 }
 
+// ===================== GLOBAL SETTINGS =====================
+function loadGlobalSettings() {
+    ajax('get_global_settings', {}, function(r) {
+        if (!r.status || !r.settings) return;
+        $('#globalSipHost').val(r.settings.sip_server_host || '');
+        $('#globalSipPort').val(r.settings.sip_server_port || '');
+    });
+}
+function saveGlobalSettings() {
+    ajax('save_global_settings', {
+        sip_server_host: $('#globalSipHost').val(),
+        sip_server_port: $('#globalSipPort').val()
+    }, function(r) {
+        if (r.status) {
+            $('#globalSettingsStatus').html('<span class="text-success">Saved</span>');
+            if (r.settings) {
+                $('#globalSipHost').val(r.settings.sip_server_host || '');
+                $('#globalSipPort').val(r.settings.sip_server_port || '');
+            }
+        } else {
+            $('#globalSettingsStatus').html('<span class="text-danger">' + esc(r.message || 'Save failed') + '</span>');
+        }
+        setTimeout(function() { $('#globalSettingsStatus').empty(); }, 4000);
+    });
+}
+
 // ===================== INIT =====================
 loadDevices();
 loadModelDropdown();
 
 $(document).ready(function() {
+    loadGlobalSettings();
     ajax('check_updates', {}, function(r) {
         if (r.status && r.current_commit) $('#currentCommit').text(r.current_commit.substring(0,7));
         if (r.current_version) $('#currentVersion').text(r.current_version);

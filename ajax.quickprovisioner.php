@@ -216,6 +216,31 @@ switch ($action) {
         }
         break;
 
+    case 'get_global_settings':
+        $response = ['status' => true, 'settings' => qp_get_global_settings()];
+        break;
+
+    case 'save_global_settings':
+        $host = trim((string)($_POST['sip_server_host'] ?? ''));
+        $port = trim((string)($_POST['sip_server_port'] ?? ''));
+        if ($host !== '' && !preg_match('/^[A-Za-z0-9._:\-\[\]]+$/', $host)) {
+            $response['message'] = 'Invalid SIP server hostname';
+            break;
+        }
+        if ($port !== '' && !preg_match('/^\d{1,5}$/', $port)) {
+            $response['message'] = 'Invalid SIP port';
+            break;
+        }
+        try {
+            $mod = \FreePBX::Quickprovisioner();
+            $mod->setConfig('sip_server_host', $host);
+            $mod->setConfig('sip_server_port', $port);
+            $response = ['status' => true, 'settings' => qp_get_global_settings()];
+        } catch (Exception $e) {
+            $response['message'] = 'Failed to save settings: ' . $e->getMessage();
+        }
+        break;
+
     case 'get_device':
         $id = $_REQUEST['id'] ?? null;
         if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
@@ -327,8 +352,18 @@ switch ($action) {
             error_log("Quick-Provisioner: Error fetching user info for extension $ext - " . $e->getMessage());
         }
 
-        $server_ip = $_SERVER['SERVER_ADDR'];
-        $server_port = \FreePBX::Sipsettings()->get('bindport') ?? '5060';
+        $server_ip = qp_resolve_sip_server([]);
+        $server_port = qp_resolve_sip_port([]);
+        $co = [];
+        if (!empty($device['custom_options_json'])) {
+            $co = json_decode($device['custom_options_json'], true) ?: [];
+        }
+        if (!empty($co['sip_server'])) {
+            $server_ip = $co['sip_server'];
+        }
+        if (!empty($co['sip_port'])) {
+            $server_port = $co['sip_port'];
+        }
 
         // Build wallpaper URL using META wallpaper_specs for dimensions
         $wpUrl = "";
@@ -358,6 +393,7 @@ switch ($action) {
             'provisioning_url' => '',
             'phonebook_url'    => qp_build_phonebook_url($device['mac'] ?? ''),
             'phonebook_name'   => 'Directory',
+            'polycom_contacts_directory' => qp_build_polycom_contacts_directory_url(),
         ];
         $context = qp_build_provisioning_context($device, $meta, $server_info);
 
