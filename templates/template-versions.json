@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0",
-  "generated": "2026-07-28T05:49:00Z",
-  "build_number": 14,
-  "commit": "824c390",
+  "generated": "2026-07-28T06:06:05Z",
+  "build_number": 16,
+  "commit": "107725d",
   "templates": {
     "cisco_88xx.xml.mustache": {
       "sha256": "de7f8c2977834cd0bcca24471fb144ab3f5b486a2c049a691a660f2e4abebf4e",
@@ -15,8 +15,8 @@
       "last_author": "Ezra"
     },
     "yealink_t4x.cfg.mustache": {
-      "sha256": "ca9ad7a9e6025a15c16db544bfd8cd839990e609c414b6c02ea68957b824d493",
-      "last_modified": "2026-07-28T15:48:44+10:00",
+      "sha256": "251a1f100cc5ad049300a92a3a62fc778a1f103031464c9c7c7dd7e4a51f7243",
+      "last_modified": "2026-07-28T16:05:35+10:00",
       "last_author": "Ezra"
     }
   }
