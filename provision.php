@@ -3,6 +3,28 @@
 include '/etc/freepbx.conf';
 require_once __DIR__ . '/MustacheEngine.php';
 
+if (!function_exists('qp_lookup_secret_from_asterisk')) {
+    function qp_lookup_secret_from_asterisk(string $ext): string {
+        $ext = preg_replace('/[^0-9A-Za-z_-]/', '', $ext);
+        if ($ext === '') {
+            return '';
+        }
+        $auth = $ext . '-auth';
+        $cmd = 'asterisk -rx ' . escapeshellarg("pjsip show auth {$auth}");
+        $out = [];
+        $code = 0;
+        @exec($cmd . ' 2>/dev/null', $out, $code);
+        if ($code !== 0 || empty($out)) {
+            return '';
+        }
+        $text = implode("\n", $out);
+        if (preg_match('/^\s*password\s*:\s*(\S+)/mi', $text, $m)) {
+            return trim((string)$m[1]);
+        }
+        return '';
+    }
+}
+
 if (!function_exists('qp_is_local_network')) {
     function qp_is_local_network() {
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -128,10 +150,25 @@ function qp_mac_from_config_filename($filename) {
     return null;
 }
 
+function qp_is_poly_model($model): bool {
+    $model = strtoupper((string)$model);
+    return strpos($model, 'VVX') !== false || strpos($model, 'POLY') !== false || strpos($model, 'EDGE') !== false;
+}
+
+function qp_poly_secondary_filename(string $mac): string {
+    return strtolower($mac) . '-prov.cfg';
+}
+
+function qp_poly_primary_config(string $mac): string {
+    $secondary = qp_poly_secondary_filename($mac);
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
+        . '<APPLICATION APP_FILE_PATH="sip.ld" CONFIG_FILES="' . $secondary . "\" />\n";
+}
+
 /**
  * Render and output provisioning config for a registered device MAC.
  */
-function qp_serve_device_config($mac) {
+function qp_serve_device_config($mac, $requested_filename = null) {
     $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
     if (strlen($mac) !== 12 || !ctype_xdigit($mac)) {
         http_response_code(400);
@@ -176,6 +213,10 @@ function qp_serve_device_config($mac) {
     $content_type = $meta['content_type'] ?? 'text/plain';
     $filename_pattern = $meta['filename_pattern'] ?? '{mac}.cfg';
     $filename = str_replace('{mac}', $mac, $filename_pattern);
+    $requested_filename = basename((string)$requested_filename);
+    $is_poly = qp_is_poly_model($device['model'] ?? $model);
+    $requested_is_poly_primary = $is_poly && $requested_filename !== '' && preg_match('/^[A-Fa-f0-9]{12}\.cfg$/', $requested_filename);
+    $requested_is_poly_secondary = $is_poly && $requested_filename !== '' && preg_match('/^[A-Fa-f0-9]{12}-prov\.cfg$/', $requested_filename);
 
     $ext = $device['extension'];
     $display_name = $ext;
@@ -183,9 +224,40 @@ function qp_serve_device_config($mac) {
 
     try {
         $userInfo = \FreePBX::Core()->getUser($ext);
-        $display_name = $userInfo['name'] ?? $ext;
-    } catch (Exception $e) {
+        if (is_array($userInfo) && !empty($userInfo['name'])) {
+            $display_name = (string)$userInfo['name'];
+        }
+    } catch (\Throwable $e) {
         error_log("Quick-Provisioner: Error fetching user info for extension $ext - " . $e->getMessage());
+    }
+    // Fallback: FreePBX users table (some web contexts return empty getUser name)
+    if ($display_name === '' || $display_name === $ext) {
+        try {
+            $ust = \FreePBX::Database()->prepare('SELECT name FROM users WHERE extension = ? LIMIT 1');
+            $ust->execute([(string)$ext]);
+            $uname = $ust->fetchColumn();
+            if (is_string($uname) && trim($uname) !== '') {
+                $display_name = trim($uname);
+            }
+        } catch (\Throwable $e) {
+            // keep extension fallback
+        }
+    }
+    // Prefer explicit line-key label for the primary line when present
+    if (!empty($device['keys_json'])) {
+        $kj = json_decode($device['keys_json'], true);
+        if (is_array($kj)) {
+            foreach ($kj as $krow) {
+                if (!is_array($krow)) continue;
+                $kt = $krow['type'] ?? '';
+                $ki = (int)($krow['index'] ?? 0);
+                $kl = trim((string)($krow['label'] ?? ''));
+                if ($kt === 'line' && $ki === 1 && $kl !== '') {
+                    $display_name = $kl;
+                    break;
+                }
+            }
+        }
     }
 
     if (!empty($device['custom_sip_secret'])) {
@@ -196,6 +268,11 @@ function qp_serve_device_config($mac) {
             $secret = $deviceInfo['secret'] ?? '';
         } catch (Exception $e) {
             error_log("Quick-Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
+        }
+        // Some FreePBX builds do not return pjsip auth password via getDevice().
+        // Fall back to Asterisk auth introspection to avoid blank reg passwords.
+        if ($secret === '') {
+            $secret = qp_lookup_secret_from_asterisk((string)$ext);
         }
     }
 
@@ -216,7 +293,9 @@ function qp_serve_device_config($mac) {
     if (!empty($device['wallpaper'])) {
         $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
         $host = $_SERVER['HTTP_HOST'];
-        $wallpaper_url = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=$mac";
+        $wallpaper_file = rawurlencode((string)$device['wallpaper']);
+        // Keep wallpaper URL query-free for maximum Poly firmware compatibility.
+        $wallpaper_url = "$protocol://$host/admin/modules/quickprovisioner/media.php/$wallpaper_file";
     }
 
     $prov = qp_build_provisioning_urls($mac);
@@ -240,10 +319,23 @@ function qp_serve_device_config($mac) {
     $template_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*\}\s*\}\}\s*/', '', $source);
     $output = qp_render_mustache($template_source, $context);
 
+    if ($requested_is_poly_primary) {
+        $content_type = 'application/xml';
+        $filename = strtolower($mac) . '.cfg';
+        $output = qp_poly_primary_config($mac);
+    } elseif ($requested_is_poly_secondary) {
+        $content_type = 'application/xml';
+        $filename = strtolower($mac) . '-prov.cfg';
+    } elseif ($requested_filename !== '') {
+        // Respect the template-declared content type for non-Poly handsets.
+        // Only the filename should mirror what the handset requested.
+        $filename = $requested_filename;
+    }
+
     $request_uri = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: ('?mac=' . $mac);
     $safe_filename = str_replace('"', '\\"', $filename);
     header("Content-Type: $content_type");
-    header("Content-Disposition: attachment; filename=\"$safe_filename\"");
+    header("Content-Disposition: inline; filename=\"$safe_filename\"");
     qp_log_access(200, $request_uri, $mac, $ext, 'config');
     echo $output;
     exit;
@@ -267,6 +359,7 @@ if (isset($_GET['type']) && in_array($_GET['type'], ['phonebook', 'directory'], 
     }
     qp_check_device_basic_auth($device);
     $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
+    $contacts = qp_apply_poly_directory_speed_dials($device, $contacts);
     if (empty($contacts)) {
         http_response_code(404);
         die('No contacts');
@@ -287,9 +380,21 @@ if (isset($_GET['type']) && in_array($_GET['type'], ['phonebook', 'directory'], 
 $path_info = $_SERVER['PATH_INFO'] ?? '';
 $request_uri_for_dir = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
 $dir_basename = basename($path_info !== '' ? $path_info : $request_uri_for_dir);
+if (strcasecmp($dir_basename, '000000000000.cfg') === 0) {
+    header('Content-Type: application/xml');
+    header('Content-Disposition: inline; filename="000000000000.cfg"');
+    echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
+        . '<APPLICATION APP_FILE_PATH="sip.ld" CONFIG_FILES="[PHONE_MAC_ADDRESS]-prov.cfg" />' . "\n";
+    qp_log_access(200, $request_uri_for_dir, null, null, 'config');
+    exit;
+}
 $config_mac = qp_mac_from_config_filename($dir_basename);
 if ($config_mac) {
-    qp_serve_device_config($config_mac);
+    qp_serve_device_config($config_mac, $dir_basename);
+}
+
+if ($dir_basename && preg_match('/^([A-Fa-f0-9]{12})-prov\.cfg$/i', $dir_basename, $pm)) {
+    qp_serve_device_config(strtoupper($pm[1]), $dir_basename);
 }
 
 // PATH_INFO / URI style: .../provision.php/aabbccddeeff-directory.xml or .../pb_MAC.xml
@@ -307,11 +412,13 @@ if ($dir_basename && preg_match('/^([A-Fa-f0-9]{12})-directory\.xml$/i', $dir_ba
     }
     qp_check_device_basic_auth($device);
     $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
+    $contacts = qp_apply_poly_directory_speed_dials($device, $contacts);
     if (empty($contacts)) {
         http_response_code(404);
         die('No contacts');
     }
     $xml = qp_generate_phonebook_xml($contacts, 'VVX250', $device['extension'] ?? '');
+    qp_save_phonebook_for_device($device, $contacts);
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: inline; filename="' . strtolower($mac) . '-directory.xml"');
     qp_log_access(200, $request_uri_for_dir, $mac, $device['extension'] ?? '', 'phonebook');

@@ -345,10 +345,10 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         $keys = json_decode($device['keys_json'], true) ?? [];
     }
 
-    $contacts = [];
-    if (!empty($device['contacts_json'])) {
-        $contacts = json_decode($device['contacts_json'], true) ?? [];
-    }
+    // Merge button speed-dial/BLF into contacts so VVX1500 directory hotkeys
+    // work even when contacts_json was left empty (home-screen uses <sd>/<bw>).
+    $contacts = qp_normalize_contacts($device['contacts_json'] ?? []);
+    $contacts = qp_apply_poly_directory_speed_dials($device, $contacts);
 
     $mac        = $device['mac'] ?? '';
     $model      = $device['model'] ?? '';
@@ -399,15 +399,35 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $cfwAlways        = $custom_options['cfw_always'] ?? '';
     $cfwBusy          = $custom_options['cfw_busy'] ?? '';
     $cfwNoAnswer      = $custom_options['cfw_no_answer'] ?? '';
-    $dialPlan         = $custom_options['dial_plan'] ?? '';
+    $dialPlan         = trim((string)($custom_options['dial_plan'] ?? ''));
+    if ($dialPlan === '') {
+        // FreePBX 3-digit extensions (100–999). Factory Poly maps often include 2-digit
+        // room patterns (xx) which fire before the user finishes dialling 101/104.
+        $dialPlan = qp_default_dial_plan();
+    }
 
     // For toggle/boolean settings, "has_*" means the user explicitly configured it
     // (the key exists in custom_options), even if the value is "0".
     $hasAutoAnswer  = array_key_exists('auto_answer', $custom_options);
     $hasDnd         = array_key_exists('dnd_enabled', $custom_options);
     $hasCallWaiting = array_key_exists('call_waiting', $custom_options);
-    $hasWebUi       = array_key_exists('web_ui_enabled', $custom_options);
+    // Always emit web-admin keys so field diagnostics work without per-device toggles.
+    $hasWebUi       = true;
     $hasCdpLldp     = array_key_exists('cdp_lldp_enabled', $custom_options);
+
+    // VVX1500: video over UDP fragments SIP INVITEs — prefer TCP signalling.
+    $isVvx1500 = in_array($model, ['VVX1500', 'VVX 1500'], true);
+    $videoEnable = $isVvx1500 ? '1' : (string)($custom_options['video_enable'] ?? '0');
+    if (array_key_exists('video_enable', $custom_options)) {
+        $videoEnable = _qp_is_truthy($custom_options['video_enable']) ? '1' : '0';
+    }
+    $sipTransportMode = 'UDPOnly';
+    if ($videoEnable === '1') {
+        $sipTransportMode = 'TCPPreferred';
+    }
+    if (!empty($custom_options['sip_transport'])) {
+        $sipTransportMode = (string)$custom_options['sip_transport'];
+    }
 
     // --- Build the lines array (single line) ---
     $lines = [
@@ -422,6 +442,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
             'sip_port'            => $sipPort,
             'transport'           => $transport,
             'transport_code'      => $transportCode,
+            'sip_transport_mode'  => $sipTransportMode,
             'expires'             => $regExpiry,
             'has_outbound_proxy'  => ($outboundProxy !== ''),
             'outbound_proxy_host' => $outboundProxy,
@@ -454,7 +475,10 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $maxLineKeys = $meta['max_line_keys'] ?? 0;
     $lineKeys = [];
     $attendantKeys = [];
+    $speedDialKeys = [];
     $expansionKeys = [];
+    $polyLineKeyAssignments = [];
+    $hasPrimaryLineAssignment = false;
 
     foreach ($keys as $k) {
         $rawType    = $k['type'] ?? 'line';
@@ -476,6 +500,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         $pickupCode = $k['pickup_code'] ?? '';
         $role       = $k['role'] ?? 'line';
         $module     = (int)($k['module'] ?? 0);
+        $isSelfExtension = ($extension !== '' && trim((string)$keyValue) === trim((string)$extension));
 
         $entry = [
             'position'    => $position,
@@ -508,10 +533,88 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
             $lineKeys[] = $entry;
         }
 
+        if ($rawType === 'line' && $module === 0 && ($position <= $maxLineKeys || $maxLineKeys === 0)) {
+            $hasPrimaryLineAssignment = true;
+            $polyLineKeyAssignments[] = [
+                'position' => $position,
+                'category' => 'Line',
+                'index' => max(1, (int)$keyLine),
+                'has_index' => true,
+            ];
+        }
+
         // Attendant keys for Polycom: BLF entries only
-        if ($rawType === 'blf') {
+        if ($rawType === 'blf' && !$isSelfExtension) {
+            $entry['button_position'] = $position;
+            $entry['position'] = count($attendantKeys) + 1; // Poly requires sequential resourceList indexes
             $attendantKeys[] = $entry;
         }
+
+        // Speed dial entries use speedDial.N index (separate from BLF resourceList)
+        if ($rawType === 'speed_dial' && $module === 0 && $keyValue !== '') {
+            $entry['button_position'] = $position;
+            $entry['position'] = count($speedDialKeys) + 1;
+            $speedDialKeys[] = $entry;
+        }
+    }
+
+    if (!$hasPrimaryLineAssignment && ($maxLineKeys === 0 || $maxLineKeys >= 1)) {
+        $polyLineKeyAssignments[] = [
+            'position' => 1,
+            'category' => 'Line',
+            'index' => 1,
+            'has_index' => true,
+        ];
+    }
+
+    $attendantIndex = 0;
+    foreach ($attendantKeys as $entry) {
+        $attendantIndex++;
+        $renderPosition = (int)($entry['button_position'] ?? $entry['position']);
+        if (!$hasPrimaryLineAssignment && $renderPosition >= 1) {
+            $renderPosition++;
+        }
+        if ($maxLineKeys > 0 && $renderPosition > $maxLineKeys) {
+            continue;
+        }
+        $polyLineKeyAssignments[] = [
+            'position' => $renderPosition,
+            'category' => 'BLF',
+            'index' => 0,
+            'has_index' => true,
+            'resource_position' => $attendantIndex,
+        ];
+    }
+
+    $speedDialIndex = 0;
+    foreach ($speedDialKeys as $entry) {
+        $speedDialIndex++;
+        $renderPosition = (int)($entry['button_position'] ?? $entry['position']);
+        if (!$hasPrimaryLineAssignment && $renderPosition >= 1) {
+            $renderPosition++;
+        }
+        if ($maxLineKeys > 0 && $renderPosition > $maxLineKeys) {
+            continue;
+        }
+        $polyLineKeyAssignments[] = [
+            'position' => $renderPosition,
+            'category' => 'SpeedDial',
+            'index' => $speedDialIndex,
+            'has_index' => true,
+        ];
+    }
+
+    // VVX1500 does NOT support Flexible Line Key reassignment (Poly UCS notes).
+    // Home-screen hotkeys come from directory <sd> indexes instead.
+    $polyTwoColumnDisplay = $isVvx1500;
+    if ($isVvx1500) {
+        $polyLineKeyAssignments = [];
+    }
+
+    if (!empty($polyLineKeyAssignments)) {
+        usort($polyLineKeyAssignments, function ($a, $b) {
+            return ((int)$a['position']) <=> ((int)$b['position']);
+        });
     }
 
     // --- Build remote_phonebooks array ---
@@ -556,6 +659,9 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'sip_port'          => $sipPort,
         'transport'         => $transport,
         'transport_code'    => $transportCode,
+        'sip_transport_mode'=> $sipTransportMode,
+        'video_enable'      => $videoEnable,
+        'video_auto_start'  => $videoEnable === '1' ? '1' : '0',
         'extension'         => $extension,
         'display_name'      => $displayName,
         'password'          => $secret,
@@ -582,10 +688,10 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'syslog_server'        => $syslogServer,
         'ringtone_url'         => $ringtoneUrl,
         'ring_type'            => $custom_options['ring_type'] ?? 'Ring1.wav',
-        'ntp_server'           => $custom_options['ntp_server'] ?? '0.pool.ntp.org',
-        'timezone'             => $custom_options['timezone'] ?? 'UTC',
+        'ntp_server'           => $custom_options['ntp_server'] ?? '0.au.pool.ntp.org',
+        'timezone'             => $custom_options['timezone'] ?? 'Australia/Brisbane',
         'dst_enable'           => $custom_options['dst_enable'] ?? '0',
-        'gmt_offset'           => $custom_options['gmt_offset'] ?? '0',
+        'gmt_offset'           => $custom_options['gmt_offset'] ?? '36000',
         'debug_level'          => $custom_options['debug_level'] ?? '0',
         'cfw_always'           => $cfwAlways,
         'cfw_busy'             => $cfwBusy,
@@ -607,7 +713,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'has_cfw_always'          => ($cfwAlways !== ''),
         'has_cfw_busy'            => ($cfwBusy !== ''),
         'has_cfw_no_answer'       => ($cfwNoAnswer !== ''),
-        'has_dial_plan'           => ($dialPlan !== ''),
+        'has_dial_plan'           => true,
         'has_screensaver_timeout' => ($screensaverTimeout !== '0' && $screensaverTimeout !== ''),
         'has_web_ui'              => $hasWebUi,
         'has_cdp_lldp'            => $hasCdpLldp,
@@ -619,6 +725,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'lock_enable'             => ($securityPin !== '' ? 1 : 0),
 
         // Boolean helper flags matching Pocket-Provisioner naming
+        'has_sip_server'       => ($sipServer !== ''),
         'is_web_ui_enabled'    => _qp_is_truthy($webUiEnabled),
         'is_cdp_lldp_enabled'  => _qp_is_truthy($cdpLldpEnabled),
         'is_auto_answer'       => _qp_is_truthy($autoAnswer),
@@ -636,6 +743,12 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'polycom_contacts_directory' => $server_info['polycom_contacts_directory'] ?? '',
         'has_polycom_contacts_directory' => !empty($server_info['polycom_contacts_directory']) && !empty($contactEntries),
         'attendant_keys'    => $attendantKeys,
+        'has_attendant_keys' => !empty($attendantKeys),
+        'speed_dial_keys'   => $speedDialKeys,
+        'has_speed_dial_keys' => !empty($speedDialKeys),
+        'poly_two_column_display' => $polyTwoColumnDisplay,
+        'poly_line_key_assignments' => $polyLineKeyAssignments,
+        'has_poly_line_key_assignments' => !empty($polyLineKeyAssignments),
         'expansion_keys'    => $expansionKeys,
         'has_expansion_keys'=> !empty($expansionKeys),
     ];
@@ -804,6 +917,14 @@ function qp_generate_polycom_phonebook_xml(array $contacts, $displayName = '') {
         $buf .= "    <item>\n";
         $buf .= '      <fn>' . qp_phonebook_xml_escape($c['name'] ?? '') . "</fn>\n";
         $buf .= '      <ct>' . qp_phonebook_xml_escape($c['number'] ?? '') . "</ct>\n";
+        // VVX1500 home-screen hotkeys come from directory speed-dial indexes
+        // (lineKey.reassignment is NOT supported on VVX1500).
+        if (!empty($c['sd']) && (int)$c['sd'] > 0) {
+            $buf .= '      <sd>' . (int)$c['sd'] . "</sd>\n";
+        }
+        if (!empty($c['bw'])) {
+            $buf .= "      <bw>1</bw>\n";
+        }
         $buf .= "    </item>\n";
     }
     $buf .= "  </item_list>\n</directory>\n";
@@ -829,6 +950,116 @@ function qp_generate_cisco_phonebook_xml(array $contacts, $displayName = '') {
 /**
  * Persist phonebook XML for a device MAC. Returns filename or null if empty.
  */
+/**
+ * Apply Poly directory speed-dial / buddy-watch fields from device keys_json.
+ * VVX1500 home-screen hotkeys require <sd>N</sd> in the local directory XML.
+ *
+ * @param array $device
+ * @param array $contacts
+ * @return array
+ */
+function qp_apply_poly_directory_speed_dials(array $device, array $contacts) {
+    $keys = [];
+    if (!empty($device['keys_json'])) {
+        $keys = json_decode($device['keys_json'], true) ?? [];
+    }
+    if (!is_array($keys)) {
+        $keys = [];
+    }
+    $extension = trim((string)($device['extension'] ?? ''));
+    $sdByNumber = [];
+    $bwNumbers = [];
+    $sdIndex = 1;
+    usort($keys, function ($a, $b) {
+        return ((int)($a['index'] ?? 0)) <=> ((int)($b['index'] ?? 0));
+    });
+    foreach ($keys as $k) {
+        if (!is_array($k)) {
+            continue;
+        }
+        $rawType = (string)($k['type'] ?? '');
+        if ($rawType === 'speeddial') {
+            $rawType = 'speed_dial';
+        }
+        $num = trim((string)($k['value'] ?? $k['full_value'] ?? ''));
+        if ($num === '' || ($extension !== '' && $num === $extension)) {
+            continue;
+        }
+        if ($rawType === 'blf') {
+            $bwNumbers[$num] = true;
+        }
+        if (in_array($rawType, ['speed_dial', 'blf'], true) && !isset($sdByNumber[$num])) {
+            $sdByNumber[$num] = $sdIndex++;
+        }
+    }
+
+    $byNumber = [];
+    foreach ($contacts as $c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $n = trim((string)($c['number'] ?? $c['phone'] ?? ''));
+        if ($n !== '') {
+            $byNumber[$n] = true;
+        }
+    }
+    foreach ($keys as $k) {
+        if (!is_array($k)) {
+            continue;
+        }
+        $rawType = (string)($k['type'] ?? '');
+        if ($rawType === 'speeddial') {
+            $rawType = 'speed_dial';
+        }
+        if (!in_array($rawType, ['speed_dial', 'blf'], true)) {
+            continue;
+        }
+        $num = trim((string)($k['value'] ?? $k['full_value'] ?? ''));
+        if ($num === '' || isset($byNumber[$num]) || ($extension !== '' && $num === $extension)) {
+            continue;
+        }
+        $label = trim((string)($k['label'] ?? ''));
+        $contacts[] = [
+            'name' => $label !== '' ? $label : $num,
+            'number' => $num,
+            'source' => 'button',
+        ];
+        $byNumber[$num] = true;
+    }
+
+    foreach ($contacts as &$c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $n = trim((string)($c['number'] ?? $c['phone'] ?? ''));
+        if ($n !== '' && isset($sdByNumber[$n])) {
+            $c['sd'] = $sdByNumber[$n];
+        }
+        if ($n !== '' && isset($bwNumbers[$n])) {
+            $c['bw'] = 1;
+        }
+    }
+    unset($c);
+
+    // Stable order: speed-dial entries first (by sd), then remaining contacts.
+    usort($contacts, function ($a, $b) {
+        $sa = (int)($a['sd'] ?? 0);
+        $sb = (int)($b['sd'] ?? 0);
+        if ($sa > 0 && $sb > 0) {
+            return $sa <=> $sb;
+        }
+        if ($sa > 0) {
+            return -1;
+        }
+        if ($sb > 0) {
+            return 1;
+        }
+        return strcmp((string)($a['name'] ?? ''), (string)($b['name'] ?? ''));
+    });
+
+    return $contacts;
+}
+
 function qp_save_phonebook_for_device(array $device, array $contacts = null) {
     $mac = preg_replace('/[^A-Fa-f0-9]/', '', strtoupper($device['mac'] ?? ''));
     if (strlen($mac) !== 12) {
@@ -837,6 +1068,8 @@ function qp_save_phonebook_for_device(array $device, array $contacts = null) {
     if ($contacts === null) {
         $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
     }
+    $contacts = qp_apply_poly_directory_speed_dials($device, $contacts);
+
     $dir = __DIR__ . '/assets/phonebook';
     if (!is_dir($dir)) {
         @mkdir($dir, 0775, true);
@@ -893,6 +1126,13 @@ function qp_get_global_settings() {
         // Module object unavailable during early bootstrap
     }
     return $defaults;
+}
+
+/**
+ * Default Poly/Yealink digitmap for typical FreePBX 3-digit extensions.
+ */
+function qp_default_dial_plan() {
+    return '[1-9]xx|*xx.|*x.T|911|0T';
 }
 
 /**

@@ -138,6 +138,15 @@ foreach ($protected_dirs as $dir => $htaccess_content) {
     }
 }
 
+// Ensure ownership aligns with FreePBX runtime user/group
+// so uploaded and generated assets are always readable by web + asterisk.
+$chown_output = [];
+$chown_return = 0;
+@exec('/usr/sbin/fwconsole chown 2>&1', $chown_output, $chown_return);
+if ($chown_return !== 0) {
+    error_log("Quick-Provisioner: fwconsole chown failed during install: " . implode("\n", $chown_output));
+}
+
 if (class_exists('FreePBX')) {
     FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Quick-Provisioner: Module installation/check completed");
 }

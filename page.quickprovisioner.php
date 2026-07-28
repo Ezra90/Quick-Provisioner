@@ -48,9 +48,17 @@ if (!isset($_SESSION['qp_csrf'])) {
     $_SESSION['qp_csrf'] = bin2hex(random_bytes(32));
 }
 $csrf_token = $_SESSION['qp_csrf'];
+$module_version = 'unknown';
+$module_xml_path = __DIR__ . '/module.xml';
+if (is_readable($module_xml_path)) {
+    $xml = @file_get_contents($module_xml_path);
+    if ($xml && preg_match('/<version>([^<]+)<\/version>/', $xml, $m)) {
+        $module_version = trim($m[1]);
+    }
+}
 ?>
 <div class="container-fluid">
-    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted">0.1.5</small></h1>
+    <h1><i class="fa fa-phone"></i> Quick-Provisioner <small class="text-muted"><?= htmlspecialchars($module_version, ENT_QUOTES, 'UTF-8') ?></small></h1>
 
     <ul class="nav nav-tabs" role="tablist">
         <li class="active"><a data-toggle="tab" href="#tab-devices" onclick="loadDevices()">Devices</a></li>
@@ -279,7 +287,7 @@ $csrf_token = $_SESSION['qp_csrf'];
 
                                     <!-- Button Layout Sub-Tab -->
                                     <div id="sub-buttons" class="tab-pane fade">
-                                        <p class="text-muted">Click buttons on the handset preview to program them. Yealink T46U/T54W: with &gt;10 DSS keys the phone uses <strong>3×9 keys</strong> (L1–5 / R6–9) and the <strong>bottom-right is the page switcher</strong>, not a linekey. Poly VVX450: L1–6 / R7–12. Cisco 8851: 5 programmable keys on the left.</p>
+                                        <p class="text-muted">Click buttons on the handset preview to program them. Yealink T46U/T54W: with &gt;10 DSS keys the phone uses <strong>3×9 keys</strong> (L1–5 / R6–9) and the <strong>bottom-right is the page switcher</strong>, not a linekey. Poly VVX450: L1–6 / R7–12. Poly VVX1500: landscape touchscreen with up to <strong>6 line keys on the right</strong> (Speed Dial is the reliable home-screen dial button; BLF is the status lamp). Cisco 8851: 5 programmable keys on the left.</p>
                                         <div class="btn-toolbar" style="margin-bottom:10px;">
                                             <div class="btn-group">
                                                 <button type="button" class="btn btn-primary btn-sm" onclick="autofillButtonsFromFreepbx('empty')"><i class="fa fa-magic"></i> Auto-fill empty from FreePBX</button>
@@ -445,6 +453,16 @@ $csrf_token = $_SESSION['qp_csrf'];
                     </div>
                 </div>
                 <div class="col-md-6">
+                    <div class="panel panel-default">
+                        <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-heartbeat"></i> Module Health</h3></div>
+                        <div class="panel-body">
+                            <p class="text-muted">Checks writable asset paths, provisioning credential coverage, and SIP secret resolution.</p>
+                            <button class="btn btn-default" onclick="loadModuleHealth()"><i class="fa fa-stethoscope"></i> Run Health Check</button>
+                            <button class="btn btn-warning" onclick="repairModulePermissions()" style="margin-left:5px;"><i class="fa fa-wrench"></i> Repair Permissions</button>
+                        <button class="btn btn-info" onclick="runTemplateSelfTest()" style="margin-left:5px;"><i class="fa fa-flask"></i> Template Self-Test</button>
+                            <div id="moduleHealthResult" style="margin-top:15px; display:none;"></div>
+                        </div>
+                    </div>
                     <!-- Access Log -->
                     <div class="panel panel-default">
                         <div class="panel-heading">
@@ -572,6 +590,7 @@ var templateSources = {};
 var smartDialShortcuts = {};
 var isExpandedView = false;
 var layoutTarget = 'phone'; // 'phone' | 'exp:1' | 'exp:2' ...
+var mediaEndpoint = '/admin/modules/quickprovisioner/media.php';
 var csrf = '<?= $csrf_token ?>';
 var freepbxExtensions = <?= json_encode($extensions, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS) ?>;
 var keyLabelCustomised = false;
@@ -808,6 +827,8 @@ function loadProfile(afterCb) {
             (profiles[model].visual_editor.keys || []).forEach(function(k) { if (k.page && k.page > mp) mp = k.page; });
             profiles[model].visual_editor.total_pages = mp;
         }
+        // Per-model key count (e.g. VVX1500=6) — trim shared-family key maps
+        applyModelKeyLimit(model, profiles[model]);
         var dn = profiles[model].display_name || model;
         $('#rightColHeader').html('<i class="fa fa-check-circle text-success"></i> ' + esc(dn) + ' Template Loaded');
         loadDeviceOptions();
@@ -817,6 +838,49 @@ function loadProfile(afterCb) {
         loadWpGallery();
         if (typeof afterCb === 'function') afterCb();
     });
+}
+
+/** Limit visual-editor keys to model_key_counts[model] and adapt VVX1500 layout. */
+function applyModelKeyLimit(model, profile) {
+    if (!profile || !profile.visual_editor) return;
+    var ve = profile.visual_editor;
+    var counts = ve.model_key_counts || {};
+    var limit = parseInt(counts[model], 10) || 0;
+    if (limit > 0 && Array.isArray(ve.keys)) {
+        ve.keys = ve.keys.filter(function(k) { return (k.index || 0) <= limit; });
+        ve.keys_per_page = Math.min(ve.keys_per_page || limit, limit);
+        ve.total_pages = 1;
+    }
+    // VVX1500 is landscape touchscreen — remap to a usable right-column layout
+    if (model === 'VVX1500' || model === 'VVX 1500') {
+        ve.schematic = {
+            chassis_width: 520, chassis_height: 320,
+            screen_x: 24, screen_y: 28, screen_width: 360, screen_height: 240
+        };
+        var n = limit > 0 ? limit : 6;
+        var keys = [];
+        var top = 36, gap = 34, kh = 28, kw = 92;
+        var left = ve.schematic.screen_x + ve.schematic.screen_width + 12;
+        for (var i = 1; i <= n; i++) {
+            keys.push({
+                index: i, x: left, y: top + (i - 1) * gap,
+                width: kw, height: kh, page: 1, side: 'right'
+            });
+        }
+        ve.keys = keys;
+        ve.keys_per_page = n;
+        ve.total_pages = 1;
+        ve.soft_keys = [
+            {label: 'New Call', x: 40, y: 278, width: 70, height: 20},
+            {label: 'Forward', x: 120, y: 278, width: 70, height: 20},
+            {label: 'MyStat', x: 200, y: 278, width: 70, height: 20},
+            {label: 'Buddies', x: 280, y: 278, width: 70, height: 20}
+        ];
+        // Drop portrait chassis SVG so landscape schematic is used
+        ve.chassis_svg_b64 = '';
+        ve.chassis_svg = '';
+        ve.svg_fallback = true;
+    }
 }
 
 function loadDeviceOptions() {
@@ -906,6 +970,12 @@ function loadDeviceOptions() {
                 html += '<input type="text" name="custom_options[' + esc(name) + ']" class="form-control" placeholder="' + esc(ph) + '" value="' + esc(defVal) + '">';
                 html += '<span class="input-group-btn"><button type="button" class="btn btn-default qp-pick-asset" data-var="' + esc(name) + '" data-kind="' + (name === 'ringtone_url' ? 'ringtone' : 'firmware') + '"><i class="fa fa-folder-open"></i></button></span>';
                 html += '</div>';
+                if (name === 'firmware_url') {
+                    html += '<div style="margin-top:6px;">';
+                    html += '<button type="button" class="btn btn-xs btn-default qp-stage-fw" data-model="T54W" data-file="T5XW-96.86.0.81.rom" title="Set T54W stage 1 firmware URL">T54W Stage 1</button> ';
+                    html += '<button type="button" class="btn btn-xs btn-default qp-stage-fw" data-model="T54W" data-file="T5XW-96.87.0.16.rom" title="Set T54W stage 2 firmware URL">T54W Stage 2</button>';
+                    html += '</div>';
+                }
             } else {
                 html += '<input type="text" name="custom_options[' + esc(name) + ']" class="form-control" placeholder="' + esc(ph) + '" value="' + esc(defVal) + '">';
             }
@@ -928,6 +998,14 @@ function loadDeviceOptions() {
 function _setCustomOption(name, value) {
     var $el = $('[name="custom_options[' + name + ']"]');
     if ($el.length) $el.val(value);
+}
+
+function buildProvisionAssetUrl(kind, filename) {
+    var p = '';
+    if (kind === 'firmware') p = 'firmware';
+    else if (kind === 'ringtone') p = 'ringtones';
+    else p = kind;
+    return window.location.origin + '/admin/modules/quickprovisioner/provision.php/' + p + '/' + encodeURIComponent(filename);
 }
 
 function loadTemplateExamples(mode, silent) {
@@ -1000,8 +1078,26 @@ $(document).on('click', '.qp-pick-asset', function() {
         var names = items.map(function(it){ return (typeof it === 'string') ? it : (it.filename || it.name); });
         var pick = prompt('Enter filename to use:\n\n' + names.join('\n'), names[0]);
         if (!pick) return;
-        // Relative media URL works with module media.php / auth
-        _setCustomOption(varName, 'media.php?file=' + encodeURIComponent(pick));
+        _setCustomOption(varName, buildProvisionAssetUrl(kind, pick));
+    });
+});
+
+$(document).on('click', '.qp-stage-fw', function() {
+    var model = $('#model').val() || '';
+    if (String(model).toUpperCase() !== String($(this).data('model')).toUpperCase()) {
+        alert('This staged preset is for ' + $(this).data('model') + ' only. Current model: ' + model);
+        return;
+    }
+    var file = $(this).data('file');
+    ajax('list_firmware', {}, function(r) {
+        if (!r.status) { alert(r.message || 'Failed to list firmware files'); return; }
+        var items = r.files || [];
+        var names = items.map(function(it){ return it.filename || it.name || it; });
+        if (names.indexOf(file) === -1) {
+            alert('Firmware file not uploaded yet: ' + file + '\nUpload it in File Manager first.');
+            return;
+        }
+        _setCustomOption('firmware_url', buildProvisionAssetUrl('firmware', file));
     });
 });
 
@@ -1322,9 +1418,39 @@ function autofillButtonsFromFreepbx(mode) {
             var km = parseInt(k.module, 10) || 0;
             if (kr === tgt.role && km === tgt.module) used[k.index] = true;
         });
+        var reservedLine = false;
+        if (tgt.role !== 'expansion' && slots.length && selfExt) {
+            var lineExists = currentKeys.some(function(k) {
+                var kr = k.role || 'line';
+                var km = parseInt(k.module, 10) || 0;
+                return kr === tgt.role && km === tgt.module && (k.type || '') === 'line';
+            });
+            if (!lineExists) {
+                var firstSlot = slots[0].index;
+                currentKeys = currentKeys.filter(function(k) {
+                    var kr = k.role || 'line';
+                    var km = parseInt(k.module, 10) || 0;
+                    return !(k.index === firstSlot && kr === tgt.role && km === tgt.module);
+                });
+                currentKeys.push({
+                    index: firstSlot,
+                    type: 'line',
+                    value: selfExt,
+                    full_value: selfExt,
+                    label: ($('#extension option:selected').text() || selfExt),
+                    short_dial_mode: 'full',
+                    custom_digits: 4,
+                    role: tgt.role,
+                    module: tgt.module
+                });
+                used[firstSlot] = true;
+                reservedLine = true;
+            }
+        }
         var ei = 0, added = 0;
         slots.forEach(function(slot) {
             if (ei >= exts.length) return;
+            if (tgt.role !== 'expansion' && slots.length && slot.index === slots[0].index) return;
             if (mode === 'empty' && used[slot.index]) return;
             var ext = exts[ei++];
             var name = ext.name || ext.extension;
@@ -1348,7 +1474,8 @@ function autofillButtonsFromFreepbx(mode) {
             added++;
         });
         renderPreview();
-        alert('Mapped ' + added + ' BLF button(s) from FreePBX (skipped this device\'s own extension).');
+        var extra = reservedLine ? ' Preserved key 1 as this extension line appearance.' : '';
+        alert('Mapped ' + added + ' BLF button(s) from FreePBX (skipped this device\'s own extension).' + extra);
     });
 }
 
@@ -1399,8 +1526,8 @@ function renderPreview() {
         }
         var wp = $('#wallpaper').val();
         if (wp) {
-            var wpu = wp.startsWith('http') ? wp : 'media.php?file=' + encodeURIComponent(wp) + '&preview=1';
-            var mode = $('#wallpaper_mode').val();
+            var mode = $('#wallpaper_mode').val() || 'crop';
+            var wpu = buildWallpaperPreviewUrl(wp, mode);
             $('<div>').css({position: 'absolute', left: ve.schematic.screen_x + 'px', top: ve.schematic.screen_y + 'px', width: ve.schematic.screen_width + 'px', height: ve.schematic.screen_height + 'px', backgroundImage: 'url(' + wpu + ')', backgroundSize: mode === 'crop' ? 'cover' : 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center', borderRadius: '2px'}).appendTo(c);
         }
     }
@@ -1707,10 +1834,35 @@ function updateScreenDims() {
     $('#screenW').text(w); $('#screenH').text(h);
 }
 
+function getWallpaperDimensions() {
+    var model = $('#model').val(), p = profiles[model];
+    var w = parseInt($('#screenW').text(), 10) || 800;
+    var h = parseInt($('#screenH').text(), 10) || 480;
+    if (p && p.wallpaper_specs) {
+        var sp = p.wallpaper_specs[model] || null;
+        if (sp && sp.width) w = parseInt(sp.width, 10) || w;
+        if (sp && sp.height) h = parseInt(sp.height, 10) || h;
+    }
+    return { width: w, height: h };
+}
+
+function buildWallpaperPreviewUrl(fn, mode) {
+    if (!fn) return '';
+    if (fn.startsWith('http')) return fn;
+    var dims = getWallpaperDimensions();
+    var wpMode = mode || $('#wallpaper_mode').val() || 'crop';
+    return mediaEndpoint + '?file=' + encodeURIComponent(fn)
+        + '&w=' + encodeURIComponent(dims.width)
+        + '&h=' + encodeURIComponent(dims.height)
+        + '&mode=' + encodeURIComponent(wpMode)
+        + '&preview=1&t=' + Date.now();
+}
+
 function uploadWallpaper() {
     var f = $('#wpUpload')[0].files[0];
     if (!f) { alert('Select a file'); return; }
     var fd = new FormData(); fd.append('file', f); fd.append('csrf_token', csrf);
+    fd.append('device_model', $('#model').val() || '');
     var model = $('#model').val(), p = profiles[model];
     if (p && p.wallpaper_specs) {
         var sp = p.wallpaper_specs[model];
@@ -1732,8 +1884,16 @@ function clearWallpaper() { $('#wallpaper').val(''); $('#wpPreview').hide(); $('
 
 function updateWpPreview(fn) {
     if (fn) {
-        var src = fn.startsWith('http') ? fn : 'media.php?file='+encodeURIComponent(fn)+'&preview=1';
-        $('#wpPreviewImg').attr('src', src); $('#wpPreview').show(); $('#wpEmpty').hide();
+        var src = buildWallpaperPreviewUrl(fn, $('#wallpaper_mode').val() || 'crop');
+        $('#wpPreviewImg')
+            .attr('src', src)
+            .off('error')
+            .on('error', function() {
+                $('#wpPreview').hide();
+                $('#wpEmpty').html('<p class="text-warning">Wallpaper preview failed to render. Re-upload this image.</p>').show();
+            });
+        $('#wpPreview').show();
+        $('#wpEmpty').hide();
     } else { $('#wpPreview').hide(); $('#wpEmpty').show(); }
 }
 
@@ -1743,7 +1903,7 @@ function loadWpGallery() {
         var html = '';
         r.files.forEach(function(f) {
             html += '<div class="col-xs-6 col-sm-4 col-md-3" style="margin-bottom:10px;"><div class="thumbnail">';
-            html += '<img src="media.php?file='+encodeURIComponent(f.filename)+'&preview=1" style="width:100%; height:100px; object-fit:cover;">';
+            html += '<img src="'+mediaEndpoint+'?file='+encodeURIComponent(f.filename)+'&preview=1" style="width:100%; height:100px; object-fit:cover;" onerror="this.style.display=\'none\';this.insertAdjacentHTML(\'afterend\',\'<div class=&quot;text-warning&quot; style=&quot;padding:8px;font-size:11px;&quot;>Preview failed</div>\');">';
             html += '<div class="caption" style="font-size:10px;"><p style="word-break:break-all;">'+esc(f.filename)+'</p>';
             html += '<button type="button" class="btn btn-xs btn-primary" onclick="selWp(\''+f.filename+'\')">Select</button> ';
             html += '<button type="button" class="btn btn-xs btn-danger" onclick="delWpAsset(\''+f.filename+'\')">Del</button>';
@@ -1861,7 +2021,7 @@ function loadAssets() {
         var html = '';
         r.files.forEach(function(f) {
             html += '<div class="col-xs-6 col-sm-4" style="margin-bottom:10px;"><div class="thumbnail">';
-            html += '<img src="media.php?file='+encodeURIComponent(f.filename)+'&preview=1" style="width:100%; height:80px; object-fit:cover;">';
+            html += '<img src="'+mediaEndpoint+'?file='+encodeURIComponent(f.filename)+'&preview=1" style="width:100%; height:80px; object-fit:cover;">';
             html += '<div class="caption" style="font-size:10px;"><p>'+esc(f.filename)+'</p><p>'+fmtSize(f.size)+'</p>';
             html += '<button class="btn btn-xs btn-danger" onclick="deleteAsset(\''+esc(f.filename).replace(/'/g,"\\'")+'\')">Delete</button>';
             html += '</div></div></div>';
@@ -2011,6 +2171,61 @@ function loadAccessLog() {
 function clearAccessLog() {
     if (!confirm('Clear all access log entries?')) return;
     ajax('clear_access_log', {}, function(r) { if(r.status) loadAccessLog(); });
+}
+
+function loadModuleHealth() {
+    $('#moduleHealthResult').html('<div class="text-muted"><i class="fa fa-spinner fa-spin"></i> Checking...</div>').show();
+    ajax('module_health', {}, function(r) {
+        if (!r.status || !r.health) {
+            $('#moduleHealthResult').html('<div class="alert alert-danger">' + esc(r.message || 'Health check failed') + '</div>').show();
+            return;
+        }
+        var h = r.health;
+        var html = '<div class="alert alert-info" style="margin-bottom:10px;">'
+            + 'Devices: <strong>' + esc(String(h.device_count || 0)) + '</strong>'
+            + ' | Missing SIP secrets: <strong>' + esc(String(h.missing_secrets || 0)) + '</strong>'
+            + ' | Missing provisioning creds: <strong>' + esc(String(h.missing_provision_creds || 0)) + '</strong>'
+            + '</div>';
+        html += '<table class="table table-condensed table-striped"><thead><tr><th>Area</th><th>Exists</th><th>Writable</th><th>Perms</th></tr></thead><tbody>';
+        (h.directories || []).forEach(function(d) {
+            html += '<tr><td>' + esc(d.name || '') + '</td><td>' + (d.exists ? 'Yes' : '<span class="text-danger">No</span>') + '</td><td>' + (d.writable ? 'Yes' : '<span class="text-danger">No</span>') + '</td><td>' + esc(d.perms || '') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        $('#moduleHealthResult').html(html).show();
+    });
+}
+
+function repairModulePermissions() {
+    if (!confirm('Run module permission repair now?')) return;
+    $('#moduleHealthResult').html('<div class="text-muted"><i class="fa fa-spinner fa-spin"></i> Repairing...</div>').show();
+    ajax('repair_module_permissions', {}, function(r) {
+        if (!r.status) {
+            $('#moduleHealthResult').html('<div class="alert alert-danger">' + esc(r.message || 'Permission repair failed') + '</div>').show();
+            return;
+        }
+        loadModuleHealth();
+    });
+}
+
+function runTemplateSelfTest() {
+    $('#moduleHealthResult').html('<div class="text-muted"><i class="fa fa-spinner fa-spin"></i> Running template self-test...</div>').show();
+    ajax('template_self_test', {}, function(r) {
+        if (!r || !r.results) {
+            $('#moduleHealthResult').html('<div class="alert alert-danger">Template self-test failed to return results.</div>').show();
+            return;
+        }
+        var html = '<div class="alert ' + (r.all_ok ? 'alert-success' : 'alert-warning') + '" style="margin-bottom:10px;">'
+            + esc(r.message || (r.all_ok ? 'All template self-tests passed' : 'Template self-test found issues'))
+            + '</div>';
+        html += '<table class="table table-condensed table-striped"><thead><tr><th>Template</th><th>Status</th><th>Notes</th></tr></thead><tbody>';
+        (r.results || []).forEach(function(t) {
+            var ok = !!t.ok;
+            var notes = ok ? 'OK' : esc((t.errors || []).join('; '));
+            html += '<tr><td>' + esc(t.template || '') + '</td><td>' + (ok ? '<span class="text-success">PASS</span>' : '<span class="text-danger">FAIL</span>') + '</td><td>' + notes + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        $('#moduleHealthResult').html(html).show();
+    });
 }
 
 // ===================== GLOBAL SETTINGS =====================

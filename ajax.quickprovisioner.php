@@ -14,6 +14,9 @@ if (!defined('QP_FWCONSOLE_RELOAD')) {
 if (!defined('QP_FWCONSOLE_RESTART')) {
     define('QP_FWCONSOLE_RESTART', '/usr/sbin/fwconsole restart');
 }
+if (!defined('QP_FWCONSOLE_CHOWN')) {
+    define('QP_FWCONSOLE_CHOWN', '/usr/sbin/fwconsole chown');
+}
 
 require_once __DIR__ . '/MustacheEngine.php';
 
@@ -51,6 +54,153 @@ if (!function_exists('qp_db_exec')) {
         return $stmt;
     }
 }
+if (!function_exists('qp_lookup_secret_from_asterisk')) {
+    function qp_lookup_secret_from_asterisk(string $ext): string {
+        $ext = preg_replace('/[^0-9A-Za-z_-]/', '', $ext);
+        if ($ext === '') {
+            return '';
+        }
+        $auth = $ext . '-auth';
+        $cmd = 'asterisk -rx ' . escapeshellarg("pjsip show auth {$auth}");
+        $out = [];
+        $code = 0;
+        @exec($cmd . ' 2>/dev/null', $out, $code);
+        if ($code !== 0 || empty($out)) {
+            return '';
+        }
+        $text = implode("\n", $out);
+        if (preg_match('/^\s*password\s*:\s*(\S+)/mi', $text, $m)) {
+            return trim((string)$m[1]);
+        }
+        return '';
+    }
+}
+if (!function_exists('qp_resolve_sip_secret')) {
+    function qp_resolve_sip_secret(string $ext, ?string $custom_sip_secret = null): array {
+        if (!empty($custom_sip_secret)) {
+            return [(string)$custom_sip_secret, 'Custom'];
+        }
+        $secret = '';
+        $source = '';
+        try {
+            $device = \FreePBX::Core()->getDevice($ext);
+            if ($device && is_array($device) && !empty($device['secret'])) {
+                $secret = (string)$device['secret'];
+                $source = 'FreePBX';
+            }
+        } catch (Exception $e) {
+            error_log("Quick-Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
+        }
+        if ($secret === '') {
+            $fallback = qp_lookup_secret_from_asterisk($ext);
+            if ($fallback !== '') {
+                $secret = $fallback;
+                $source = 'AsteriskAuth';
+            }
+        }
+        return [$secret, $source];
+    }
+}
+if (!function_exists('qp_normalize_keys_for_extension')) {
+    function qp_normalize_keys_for_extension(string $keys_json, string $extension): string {
+        $keys = json_decode($keys_json, true);
+        if (!is_array($keys)) {
+            $keys = [];
+        }
+        $ext = trim($extension);
+        if ($ext === '') {
+            return json_encode(array_values($keys));
+        }
+
+        $hasPrimaryLine = false;
+        foreach ($keys as $k) {
+            if (!is_array($k)) {
+                continue;
+            }
+            $role = (string)($k['role'] ?? 'line');
+            $module = (int)($k['module'] ?? 0);
+            $type = strtolower((string)($k['type'] ?? ''));
+            if ($role === 'line' && $module === 0 && $type === 'line') {
+                $hasPrimaryLine = true;
+                break;
+            }
+        }
+
+        if (!$hasPrimaryLine) {
+            $converted = false;
+            foreach ($keys as &$k) {
+                if (!is_array($k)) {
+                    continue;
+                }
+                $role = (string)($k['role'] ?? 'line');
+                $module = (int)($k['module'] ?? 0);
+                $idx = (int)($k['index'] ?? 0);
+                $value = (string)($k['value'] ?? $k['full_value'] ?? '');
+                if ($role === 'line' && $module === 0 && $idx === 1 && $value === $ext) {
+                    $k['type'] = 'line';
+                    $k['label'] = (string)($k['label'] ?? $ext);
+                    $converted = true;
+                    break;
+                }
+            }
+            unset($k);
+
+            if (!$converted) {
+                $keys[] = [
+                    'index' => 1,
+                    'type' => 'line',
+                    'value' => $ext,
+                    'full_value' => $ext,
+                    'label' => $ext,
+                    'short_dial_mode' => 'full',
+                    'custom_digits' => 4,
+                    'role' => 'line',
+                    'module' => 0,
+                ];
+            }
+        }
+
+        return json_encode(array_values($keys));
+    }
+}
+if (!function_exists('qp_fix_module_permissions')) {
+    function qp_fix_module_permissions(): void {
+        static $attempted = false;
+        if ($attempted) {
+            return;
+        }
+        $attempted = true;
+        $dirs = [
+            __DIR__ . '/assets',
+            __DIR__ . '/assets/uploads',
+            __DIR__ . '/assets/ringtones',
+            __DIR__ . '/assets/firmware',
+            __DIR__ . '/assets/phonebook',
+            __DIR__ . '/templates',
+        ];
+        foreach ($dirs as $dir) {
+            if (is_dir($dir)) {
+                @chmod($dir, 0775);
+            }
+        }
+        $output = [];
+        $code = 0;
+        @exec(QP_FWCONSOLE_CHOWN . ' 2>&1', $output, $code);
+    }
+}
+if (!function_exists('qp_generate_prov_username')) {
+    function qp_generate_prov_username(string $extension, string $mac): string {
+        $extension = preg_replace('/[^0-9A-Za-z_-]/', '', $extension);
+        $mac_tail = strtolower(substr(preg_replace('/[^A-Fa-f0-9]/', '', $mac), -6));
+        $base = $extension !== '' ? $extension : 'phone';
+        return $base . '_' . $mac_tail;
+    }
+}
+if (!function_exists('qp_generate_prov_password')) {
+    function qp_generate_prov_password(): string {
+        return rtrim(strtr(base64_encode(random_bytes(12)), '+/', 'AZ'), '=');
+    }
+}
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -74,6 +224,9 @@ function qp_safe_write($filepath, $content) {
         umask($old_umask);
     }
     
+    if (!is_writable($dir)) {
+        qp_fix_module_permissions();
+    }
     if (!is_writable($dir)) {
         return ['status' => false, 'message' => 'Directory not writable: ' . $dir];
     }
@@ -108,6 +261,9 @@ function qp_safe_move_upload($tmp_file, $target) {
         umask($old_umask);
     }
     
+    if (!is_writable($dir)) {
+        qp_fix_module_permissions();
+    }
     if (!is_writable($dir)) {
         return ['status' => false, 'message' => 'Directory not writable: ' . $dir];
     }
@@ -157,11 +313,19 @@ switch ($action) {
         $security_pin = $form['security_pin'] ?? '';
         $prov_username = $form['prov_username'] ?? '';
         $prov_password = $form['prov_password'] ?? '';
+        if ($prov_username === '') {
+            $prov_username = qp_generate_prov_username((string)($form['extension'] ?? ''), (string)$form['mac']);
+        }
+        if ($prov_password === '') {
+            $prov_password = qp_generate_prov_password();
+        }
         $custom_sip_secret = $form['custom_sip_secret'] ?? null;
         // Allow empty string to clear the custom secret
         if ($custom_sip_secret === '') {
             $custom_sip_secret = null;
         }
+
+        $keys_json = qp_normalize_keys_for_extension($keys_json, (string)($form['extension'] ?? ''));
 
         $id = $form['deviceId'] ?? null;
         try {
@@ -258,27 +422,7 @@ switch ($action) {
         $devices = [];
         foreach ($rows as $row) {
             $ext = $row['extension'];
-            $secret = '';
-            $secretSource = '';
-
-            // Check if custom secret is set
-            if (!empty($row['custom_sip_secret'])) {
-                $secret = $row['custom_sip_secret'];
-                $secretSource = 'Custom';
-            } else {
-                // Try to fetch secret from FreePBX
-                try {
-                    $device = \FreePBX::Core()->getDevice($ext);
-                    if ($device && is_array($device) && isset($device['secret'])) {
-                        $secret = $device['secret'];
-                        $secretSource = 'FreePBX';
-                    } else {
-                        error_log("Quick-Provisioner: Secret not found for extension $ext");
-                    }
-                } catch (Exception $e) {
-                    error_log("Quick-Provisioner: Error fetching secret for extension $ext - " . $e->getMessage());
-                }
-            }
+            [$secret, $secretSource] = qp_resolve_sip_secret((string)$ext, $row['custom_sip_secret'] ?? null);
 
             $devices[] = [
                 'id' => $row['id'],
@@ -326,21 +470,7 @@ switch ($action) {
         $display_name = $ext;
         $secret = '';
 
-        // Use custom secret if available
-        if (!empty($device['custom_sip_secret'])) {
-            $secret = $device['custom_sip_secret'];
-        } else {
-            try {
-                $deviceInfo = \FreePBX::Core()->getDevice($ext);
-                if ($deviceInfo && is_array($deviceInfo) && isset($deviceInfo['secret'])) {
-                    $secret = $deviceInfo['secret'];
-                } else {
-                    error_log("Quick-Provisioner: Secret not found for extension $ext during config preview");
-                }
-            } catch (Exception $e) {
-                error_log("Quick-Provisioner: Error fetching FreePBX data for extension $ext - " . $e->getMessage());
-            }
-        }
+        [$secret,] = qp_resolve_sip_secret((string)$ext, $device['custom_sip_secret'] ?? null);
 
         // Fetch display name
         try {
@@ -431,7 +561,25 @@ switch ($action) {
             $response['message'] = 'Invalid file extension';
             break;
         }
-        $filename = uniqid('asset_') . '.' . $ext;
+        $tmp_info = @getimagesize($_FILES['file']['tmp_name']);
+        if (!$tmp_info || empty($tmp_info[0]) || empty($tmp_info[1])) {
+            $response['message'] = 'Invalid or unreadable image file';
+            break;
+        }
+        // Preserve the original filename (sanitized) so admins can recognize assets,
+        // while still avoiding collisions.
+        $original_base = pathinfo($_FILES['file']['name'], PATHINFO_FILENAME);
+        $safe_base = preg_replace('/[^A-Za-z0-9._-]/', '_', (string)$original_base);
+        $safe_base = trim($safe_base, '._-');
+        if ($safe_base === '') {
+            $safe_base = 'wallpaper';
+        }
+        $filename = $safe_base . '.' . $ext;
+        $counter = 1;
+        while (file_exists(__DIR__ . '/assets/uploads/' . $filename)) {
+            $counter++;
+            $filename = $safe_base . '_' . $counter . '.' . $ext;
+        }
         $target = __DIR__ . '/assets/uploads/' . $filename;
         
         // Auto-resize image if dimensions are provided
@@ -512,6 +660,12 @@ switch ($action) {
                 imagedestroy($dest);
                 
                 if ($save_result) {
+                    $saved_info = @getimagesize($target);
+                    if (!$saved_info || empty($saved_info[0]) || empty($saved_info[1])) {
+                        @unlink($target);
+                        $response['message'] = 'Uploaded image failed validation after resize';
+                        break;
+                    }
                     if (!chmod($target, 0664)) {
                         error_log("Quick-Provisioner: Failed to set permissions on $target");
                     }
@@ -781,11 +935,7 @@ switch ($action) {
             break;
         }
         try {
-            $device = \FreePBX::Core()->getDevice($ext);
-            $secret = '';
-            if ($device && is_array($device) && isset($device['secret'])) {
-                $secret = $device['secret'];
-            }
+            [$secret,] = qp_resolve_sip_secret((string)$ext, null);
             if ($secret) {
                 $response = ['status' => true, 'secret' => $secret];
             } else {
@@ -1039,16 +1189,214 @@ switch ($action) {
     // === ACCESS LOG ACTIONS ===
     case 'list_access_log':
         $limit = min(200, max(1, (int)($_REQUEST['limit'] ?? 50)));
-        $rows = qp_db_exec(
-            "SELECT * FROM quickprovisioner_access_log ORDER BY id DESC LIMIT ?",
-            [$limit]
-        )->fetchAll(PDO::FETCH_ASSOC);
+        // MariaDB can reject quoted LIMIT placeholders depending on PDO mode.
+        // Interpolate a bounded integer to keep syntax portable.
+        $rows = qp_pdo()
+            ->query("SELECT * FROM quickprovisioner_access_log ORDER BY id DESC LIMIT {$limit}")
+            ->fetchAll(PDO::FETCH_ASSOC);
         $response = ['status' => true, 'entries' => $rows ?: []];
         break;
 
     case 'clear_access_log':
         qp_pdo()->query("TRUNCATE TABLE quickprovisioner_access_log");
         $response = ['status' => true, 'message' => 'Access log cleared'];
+        break;
+
+    case 'module_health':
+        $dirs = [
+            'assets' => __DIR__ . '/assets',
+            'uploads' => __DIR__ . '/assets/uploads',
+            'ringtones' => __DIR__ . '/assets/ringtones',
+            'firmware' => __DIR__ . '/assets/firmware',
+            'phonebook' => __DIR__ . '/assets/phonebook',
+            'templates' => __DIR__ . '/templates',
+        ];
+        $dirStatus = [];
+        foreach ($dirs as $name => $dir) {
+            $dirStatus[] = [
+                'name' => $name,
+                'path' => $dir,
+                'exists' => is_dir($dir),
+                'writable' => is_dir($dir) ? is_writable($dir) : false,
+                'perms' => is_dir($dir) ? substr(sprintf('%o', fileperms($dir)), -4) : null,
+            ];
+        }
+        $deviceCount = (int)qp_pdo()->query("SELECT COUNT(*) FROM quickprovisioner_devices")->fetchColumn();
+        $missingSecrets = 0;
+        $missingProvisionCreds = 0;
+        $rows = qp_pdo()->query("SELECT extension, mac, prov_username, prov_password, custom_sip_secret FROM quickprovisioner_devices")->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as $row) {
+            [$secret,] = qp_resolve_sip_secret((string)($row['extension'] ?? ''), $row['custom_sip_secret'] ?? null);
+            if ($secret === '') {
+                $missingSecrets++;
+            }
+            if (empty($row['prov_username']) || empty($row['prov_password'])) {
+                $missingProvisionCreds++;
+            }
+        }
+        $response = [
+            'status' => true,
+            'health' => [
+                'directories' => $dirStatus,
+                'device_count' => $deviceCount,
+                'missing_secrets' => $missingSecrets,
+                'missing_provision_creds' => $missingProvisionCreds,
+            ],
+        ];
+        break;
+
+    case 'repair_module_permissions':
+        qp_fix_module_permissions();
+        $response = ['status' => true, 'message' => 'Permission repair attempted'];
+        break;
+
+    case 'template_self_test':
+        $results = [];
+        $allOk = true;
+        foreach (glob($templates_dir . '/*.mustache') as $template_file) {
+            $template_name = basename((string)$template_file);
+            $source = @file_get_contents($template_file);
+            if ($source === false) {
+                $results[] = ['template' => $template_name, 'ok' => false, 'errors' => ['Unable to read template file']];
+                $allOk = false;
+                continue;
+            }
+            $meta = qp_parse_template_meta($source);
+            if (!$meta) {
+                $results[] = ['template' => $template_name, 'ok' => false, 'errors' => ['Invalid or missing META']];
+                $allOk = false;
+                continue;
+            }
+
+            $model = '';
+            if (!empty($meta['supported_models']) && is_array($meta['supported_models'])) {
+                $model = (string)reset($meta['supported_models']);
+            }
+            if ($model === '') {
+                $model = pathinfo($template_name, PATHINFO_FILENAME);
+            }
+
+            $device = [
+                'mac' => '0004F24DFFFF',
+                'model' => $model,
+                'extension' => '101',
+                'wallpaper' => 'selftest.jpg',
+                'wallpaper_mode' => 'fit',
+                'security_pin' => '',
+                'keys_json' => json_encode([
+                    ['index' => 1, 'type' => 'line', 'value' => '101', 'full_value' => '101', 'label' => 'Line 101', 'role' => 'line', 'module' => 0],
+                    ['index' => 2, 'type' => 'blf', 'value' => '104', 'full_value' => '104', 'label' => 'BLF 104', 'role' => 'line', 'module' => 0],
+                ]),
+                'contacts_json' => json_encode([
+                    ['name' => 'Bill Botel', 'number' => '104', 'source' => 'selftest'],
+                ]),
+                'custom_options_json' => json_encode([
+                    'sip_port' => '5060',
+                    'reg_expiry' => '3600',
+                    'voicemail_number' => '*97',
+                    'ntp_server' => '0.au.pool.ntp.org',
+                    'gmt_offset' => '36000',
+                    'dst_enable' => '0',
+                    'dnd_enabled' => '0',
+                    'call_waiting' => '1',
+                ]),
+            ];
+            $server_info = [
+                'server_ip' => '192.168.13.241',
+                'sip_port' => '5060',
+                'display_name' => 'Self Test',
+                'secret' => 'selftestsecret',
+                'wallpaper_url' => 'http://192.168.13.241/admin/modules/quickprovisioner/media.php/selftest.jpg',
+                'provisioning_url' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/0004f24dffff-prov.cfg',
+                'provisioning_base' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/',
+                'phonebook_url' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/0004f24dffff-directory.xml',
+                'phonebook_name' => 'Directory',
+                'polycom_contacts_directory' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/0004f24dffff-directory.xml',
+            ];
+            $ctx = qp_build_provisioning_context($device, $meta, $server_info);
+            $render_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*\}\s*\}\}\s*/', '', $source);
+            $rendered = qp_render_mustache($render_source, $ctx);
+
+            $errors = [];
+            if (strpos($rendered, '{{') !== false) {
+                $errors[] = 'Unresolved Mustache token(s) remain in output';
+            }
+            if (($meta['config_format'] ?? '') === 'xml' && stripos($rendered, '<?xml') === false) {
+                $errors[] = 'XML template rendered without XML declaration';
+            }
+            if ($template_name === 'polycom_vvx.xml.mustache') {
+                $polyChecks = [
+                    'lineKey.reassignment.enabled="1"',
+                    'bg.background.enabled="1"',
+                    'tcpIpApp.sntp.daylightSavings.enable="0"',
+                    'dialplan.digitmap="[1-9]xx|*xx.|*x.T|911|0T"',
+                    'httpd.enabled="1"',
+                    'attendant.reg="1"',
+                    'attendant.resourceList.1.address="sip:104@192.168.13.241"',
+                    'attendant.resourceList.1.type="normal"',
+                    'lineKey.2.category="BLF"',
+                    'lineKey.2.index="0"',
+                ];
+                foreach ($polyChecks as $needle) {
+                    if (strpos($rendered, $needle) === false) {
+                        $errors[] = 'Missing Poly regression key: ' . $needle;
+                    }
+                }
+                // VVX1500: no FLK — directory speed-dial indexes drive home-screen keys;
+                // video uses TCPPreferred to avoid UDP INVITE fragmentation.
+                $vvxDevice = $device;
+                $vvxDevice['model'] = 'VVX1500';
+                $vvxDevice['keys_json'] = json_encode([
+                    ['index' => 1, 'type' => 'line', 'value' => '101', 'full_value' => '101', 'label' => 'Line 101', 'role' => 'line', 'module' => 0],
+                    ['index' => 2, 'type' => 'speed_dial', 'value' => '104', 'full_value' => '104', 'label' => 'Bill Botel', 'role' => 'line', 'module' => 0],
+                    ['index' => 3, 'type' => 'blf', 'value' => '104', 'full_value' => '104', 'label' => 'Bill Botel', 'role' => 'line', 'module' => 0],
+                ]);
+                $vvxCtx = qp_build_provisioning_context($vvxDevice, $meta, $server_info);
+                $vvxOut = qp_render_mustache($render_source, $vvxCtx);
+                foreach ([
+                    'video.enable="1"',
+                    'TCPPreferred',
+                    'speedDial.1.address="104"',
+                    'device.prov.contactsDirectory=',
+                ] as $needle) {
+                    if (strpos($vvxOut, $needle) === false) {
+                        $errors[] = 'Missing VVX1500 regression key: ' . $needle;
+                    }
+                }
+                if (strpos($vvxOut, 'lineKey.reassignment.enabled="1"') !== false) {
+                    $errors[] = 'VVX1500 must not emit FLK reassignment';
+                }
+                // Buttons alone (empty contacts_json) must still enable directory URL
+                $vvxButtonsOnly = $vvxDevice;
+                $vvxButtonsOnly['contacts_json'] = '[]';
+                $vvxButtonsCtx = qp_build_provisioning_context($vvxButtonsOnly, $meta, $server_info);
+                if (empty($vvxButtonsCtx['has_polycom_contacts_directory'])) {
+                    $errors[] = 'VVX1500 button keys alone should enable contactsDirectory';
+                }
+                $dirXml = qp_generate_polycom_phonebook_xml([
+                    ['name' => 'Bill Botel', 'number' => '104', 'sd' => 1, 'bw' => 1],
+                ], '101');
+                if (strpos($dirXml, '<sd>1</sd>') === false) {
+                    $errors[] = 'Poly directory missing speed-dial index <sd>';
+                }
+            }
+
+            $ok = empty($errors);
+            if (!$ok) {
+                $allOk = false;
+            }
+            $results[] = [
+                'template' => $template_name,
+                'ok' => $ok,
+                'errors' => $errors,
+            ];
+        }
+        $response = [
+            'status' => $allOk,
+            'all_ok' => $allOk,
+            'results' => $results,
+            'message' => $allOk ? 'All template self-tests passed' : 'One or more template self-tests failed',
+        ];
         break;
 
     case 'check_sync':

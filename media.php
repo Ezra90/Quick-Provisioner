@@ -12,6 +12,27 @@ if (!function_exists('qp_is_local_network')) {
         return false;
     }
 }
+if (!function_exists('qp_media_log_access')) {
+    function qp_media_log_access($status_code, $path, $mac, $resource_type) {
+        try {
+            $stmt = \FreePBX::Database()->prepare(
+                "INSERT INTO quickprovisioner_access_log (status_code, method, path, client_ip, mac, extension, resource_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            );
+            $stmt->execute([
+                $status_code,
+                $_SERVER['REQUEST_METHOD'] ?? 'GET',
+                substr((string)$path, 0, 255),
+                $_SERVER['REMOTE_ADDR'] ?? '',
+                $mac,
+                null,
+                $resource_type,
+                substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 255),
+            ]);
+        } catch (Exception $e) {
+            // Never break media serving on log errors.
+        }
+    }
+}
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -49,20 +70,39 @@ if (!$authorized) {
 }
 
 $file = $_GET['file'] ?? '';
+$pathInfo = $_SERVER['PATH_INFO'] ?? '';
+if ($file === '' && $pathInfo !== '') {
+    $file = basename((string)$pathInfo);
+}
 $req_w = (int)($_GET['w'] ?? 0);
 $req_h = (int)($_GET['h'] ?? 0);
 $mode = $_GET['mode'] ?? 'crop';
+
+if (!function_exists('qp_media_placeholder')) {
+    function qp_media_placeholder() {
+        header('Content-Type: image/png');
+        echo base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=');
+        exit;
+    }
+}
 
 // Validate mode parameter
 if (!in_array($mode, ['crop', 'fit'], true)) {
     $mode = 'crop';
 }
 
+if (empty($file) && !empty($mac)) {
+    $stmt = \FreePBX::Database()->prepare("SELECT wallpaper FROM quickprovisioner_devices WHERE mac=?");
+    $stmt->execute([$mac]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!empty($row['wallpaper'])) {
+        $file = basename((string)$row['wallpaper']);
+    }
+}
+
 $path = __DIR__ . '/assets/uploads/' . basename($file);
 if (!file_exists($path) || empty($file)) {
-    header('Content-Type: image/png');
-    echo base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=');
-    exit;
+    qp_media_placeholder();
 }
 
 if ($mac && ($req_w == 0 || $req_h == 0)) {
@@ -93,70 +133,100 @@ if ($mac && ($req_w == 0 || $req_h == 0)) {
 
 if ($req_w == 0) $req_w = 800;
 if ($req_h == 0) $req_h = 480;
+$req_w = max(1, min(4096, $req_w));
+$req_h = max(1, min(4096, $req_h));
 
-$info = getimagesize($path);
-if (!$info) {
-    http_response_code(400);
-    die("Invalid image");
-}
-list($orig_w, $orig_h, $type) = $info;
-
-switch ($type) {
-    case IMAGETYPE_JPEG: $src = imagecreatefromjpeg($path); break;
-    case IMAGETYPE_PNG: $src = imagecreatefrompng($path); break;
-    case IMAGETYPE_GIF: $src = imagecreatefromgif($path); break;
-    default: die("Unsupported format");
-}
-
-$dst = imagecreatetruecolor($req_w, $req_h);
-
-if ($type == IMAGETYPE_PNG || $type == IMAGETYPE_GIF) {
-    imagealphablending($dst, false);
-    imagesavealpha($dst, true);
-    $trans = imagecolorallocatealpha($dst, 0, 0, 0, 127);
-    imagefill($dst, 0, 0, $trans);
-} else {
-    $black = imagecolorallocate($dst, 0, 0, 0);
-    imagefill($dst, 0, 0, $black);
-}
-
-$src_ratio = $orig_w / $orig_h;
-$dst_ratio = $req_w / $req_h;
-
-if ($mode === 'crop') {
-    if ($src_ratio > $dst_ratio) {
-        $nh = $req_h;
-        $nw = $req_h * $src_ratio;
-    } else {
-        $nw = $req_w;
-        $nh = $req_w / $src_ratio;
+try {
+    $info = @getimagesize($path);
+    if (!$info) {
+        throw new RuntimeException('Invalid image metadata');
     }
-} else {
-    if ($src_ratio > $dst_ratio) {
-        $nw = $req_w;
-        $nh = $req_w / $src_ratio;
-    } else {
-        $nh = $req_h;
-        $nw = $req_h * $src_ratio;
+    list($orig_w, $orig_h, $type) = $info;
+    if ($orig_w < 1 || $orig_h < 1) {
+        throw new RuntimeException('Invalid image dimensions');
     }
+
+    switch ($type) {
+        case IMAGETYPE_JPEG:
+            $src = @imagecreatefromjpeg($path);
+            break;
+        case IMAGETYPE_PNG:
+            $src = @imagecreatefrompng($path);
+            break;
+        case IMAGETYPE_GIF:
+            $src = @imagecreatefromgif($path);
+            break;
+        default:
+            throw new RuntimeException('Unsupported image type');
+    }
+    if (!$src) {
+        throw new RuntimeException('Unable to decode source image');
+    }
+
+    $dst = imagecreatetruecolor($req_w, $req_h);
+
+    if ($type == IMAGETYPE_PNG || $type == IMAGETYPE_GIF) {
+        imagealphablending($dst, false);
+        imagesavealpha($dst, true);
+        $trans = imagecolorallocatealpha($dst, 0, 0, 0, 127);
+        imagefill($dst, 0, 0, $trans);
+    } else {
+        $black = imagecolorallocate($dst, 0, 0, 0);
+        imagefill($dst, 0, 0, $black);
+    }
+
+    $src_ratio = $orig_w / $orig_h;
+    $dst_ratio = $req_w / $req_h;
+
+    if ($mode === 'crop') {
+        if ($src_ratio > $dst_ratio) {
+            $nh = $req_h;
+            $nw = $req_h * $src_ratio;
+        } else {
+            $nw = $req_w;
+            $nh = $req_w / $src_ratio;
+        }
+    } else {
+        if ($src_ratio > $dst_ratio) {
+            $nw = $req_w;
+            $nh = $req_w / $src_ratio;
+        } else {
+            $nh = $req_h;
+            $nw = $req_h * $src_ratio;
+        }
+    }
+
+    // GD imagecopyresampled expects integer coordinates/sizes.
+    $x = (int)round(($req_w - $nw) / 2);
+    $y = (int)round(($req_h - $nh) / 2);
+    $nw = (int)round($nw);
+    $nh = (int)round($nh);
+
+    imagecopyresampled($dst, $src, $x, $y, 0, 0, $nw, $nh, (int)$orig_w, (int)$orig_h);
+
+    if ($type == IMAGETYPE_PNG) {
+        header('Content-Type: image/png');
+        imagepng($dst);
+    } elseif ($type == IMAGETYPE_GIF) {
+        header('Content-Type: image/gif');
+        imagegif($dst);
+    } else {
+        header('Content-Type: image/jpeg');
+        imagejpeg($dst, null, 90);
+    }
+    qp_media_log_access(200, $_SERVER['REQUEST_URI'] ?? '', $mac, 'wallpaper');
+
+    imagedestroy($src);
+    imagedestroy($dst);
+} catch (Throwable $e) {
+    error_log('Quick-Provisioner media.php failed for "' . basename($file) . '": ' . $e->getMessage());
+    if (is_readable($path)) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($path) ?: 'application/octet-stream';
+        header('Content-Type: ' . $mime);
+        readfile($path);
+        exit;
+    }
+    qp_media_placeholder();
 }
-
-$x = ($req_w - $nw) / 2;
-$y = ($req_h - $nh) / 2;
-
-imagecopyresampled($dst, $src, $x, $y, 0, 0, $nw, $nh, $orig_w, $orig_h);
-
-if ($type == IMAGETYPE_PNG) {
-    header('Content-Type: image/png');
-    imagepng($dst);
-} elseif ($type == IMAGETYPE_GIF) {
-    header('Content-Type: image/gif');
-    imagegif($dst);
-} else {
-    header('Content-Type: image/jpeg');
-    imagejpeg($dst, null, 90);
-}
-
-imagedestroy($src);
-imagedestroy($dst);
 ?>
