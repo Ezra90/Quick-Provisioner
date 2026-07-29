@@ -121,18 +121,27 @@
       bg.background.enabled="1"
     />
     <!-- Force custom background selection so wallpaper applies on boot.
-         Keep both generic and VVX1500-specific keys for older firmware compatibility. -->
+         Keep both generic and VVX1500-specific keys for older firmware compatibility.
+         .set="1" required or Poly ignores selection after factory reset. -->
     <bg.color
+      bg.color.selection.set="1"
       bg.color.selection="2,1"
+      bg.VVX_1500.color.selection.set="1"
       bg.VVX_1500.color.selection="2,1"
     >
       <bg.color.bm
+        bg.color.bm.1.name.set="1"
         bg.color.bm.1.name="{{wallpaper_url}}"
+        bg.VVX_1500.color.bm.1.name.set="1"
         bg.VVX_1500.color.bm.1.name="{{wallpaper_url}}"
       />
     </bg.color>
   </bg>
 {{/wallpaper_url}}
+  <prov
+    prov.quickSetup.enabled="0"
+    prov.quickSetup.limitServerDetails="1"
+  />
   <voice
     voice.codecPref.G7221.16kbps="0"
     voice.codecPref.G7221.24kbps="0"
@@ -241,6 +250,11 @@
     device.prov.serverType="HTTP"
     device.prov.user="{{provision_user}}"
     device.prov.password="{{provision_pass}}"
+    <!-- 2 = use Server menu / configured serverName only — ignore DHCP opt 66/160 (Telstra DMS). -->
+    device.dhcp.bootSrvUseOpt.set="1"
+    device.dhcp.bootSrvUseOpt="2"
+    device.prov.ztpEnabled.set="1"
+    device.prov.ztpEnabled="0"
 {{#has_polycom_contacts_directory}}
     device.prov.contactsDirectory="{{polycom_contacts_directory}}"
 {{/has_polycom_contacts_directory}}
@@ -257,7 +271,19 @@
 {{/has_web_ui}}
 {{#has_firmware}}
   <UPDATER
+    updater.autoPowerUp.set="1"
+    updater.autoPowerUp="1"
+    updater.application.url.set="1"
     updater.application.url="{{firmware_url}}"
+  />
+{{/has_firmware}}
+{{^has_firmware}}
+  <!-- Freeze software: clear any prior updater URL and do not auto-upgrade on boot. -->
+  <UPDATER
+    updater.autoPowerUp.set="1"
+    updater.autoPowerUp="0"
+    updater.application.url.set="1"
+    updater.application.url=""
   />
 {{/has_firmware}}
 </PHONE_CONFIG>

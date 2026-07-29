@@ -75,7 +75,7 @@ if (is_readable($module_xml_path)) {
             <button class="btn btn-success" onclick="newDevice()"><i class="fa fa-plus"></i> Add New</button>
             <button class="btn btn-default" onclick="loadDevices()"><i class="fa fa-refresh"></i> Refresh</button>
             <table class="table table-striped" style="margin-top:15px;">
-                <thead><tr><th>MAC</th><th>Extension</th><th>Name</th><th>Secret</th><th>Model</th><th>Actions</th></tr></thead>
+                <thead><tr><th>MAC</th><th>Extension</th><th>Name</th><th>SIP Secret</th><th>DMS User</th><th>DMS Password</th><th>Model</th><th>Actions</th></tr></thead>
                 <tbody id="deviceListBody"></tbody>
             </table>
         </div>
@@ -171,7 +171,7 @@ if (is_readable($module_xml_path)) {
                                         <input type="text" id="prov_username" name="prov_username" class="form-control" placeholder="For remote provisioning">
                                         <span class="input-group-btn"><button type="button" class="btn btn-default" onclick="genProvUser()" title="Generate from extension + name">Generate</button></span>
                                     </div>
-                                    <small class="text-muted">Generate builds <code>ext_name</code> from the selected FreePBX extension (qsetup-friendly).</small>
+                                    <small class="text-muted">Generate builds <code>ext_name</code> from the selected FreePBX extension (qsetup-friendly). Saving also syncs this MAC into the Firewall/fail2ban whitelist (with known handset IPs).</small>
                                 </div>
                                 <div class="form-group">
                                     <label>Provisioning Password</label>
@@ -505,6 +505,19 @@ if (is_readable($module_xml_path)) {
                                 <label>SIP Port (optional)</label>
                                 <input type="text" id="globalSipPort" class="form-control" placeholder="Leave blank to use FreePBX bindport">
                             </div>
+                            <div class="form-group">
+                                <label>Public HTTP Port (provisioning / wallpaper)</label>
+                                <input type="text" id="globalHttpPort" class="form-control" placeholder="9080">
+                                <small class="text-muted">Written into handset HTTP URLs so remotes hit your UniFi forward (WAN <code>9080</code> → PBX <code>9080</code>). Leave blank for standard port 80.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Handset auth mode</label>
+                                <select id="globalAuthMode" class="form-control">
+                                    <option value="lan_open">LAN open (bring-up) — no QSetup on LAN; MAC-only pull</option>
+                                    <option value="qsetup">QSetup locked — Prov username + password + MAC</option>
+                                </select>
+                                <small class="text-muted">Default is <strong>QSetup locked</strong>. Use <strong>LAN open</strong> only for initial bring-up (MAC-only on LAN). When all phones are up, switch back to QSetup locked and rebuild.</small>
+                            </div>
                             <button type="button" class="btn btn-primary" onclick="saveGlobalSettings()"><i class="fa fa-save"></i> Save Global Settings</button>
                             <span id="globalSettingsStatus" style="margin-left:10px;"></span>
                         </div>
@@ -738,16 +751,21 @@ function fmtSize(b) { if (b < 1024) return b + ' B'; if (b < 1048576) return (b/
 // ===================== DEVICES =====================
 function loadDevices() {
     ajax('list_devices_with_secrets', {}, function(r) {
-        if (!r.status) { $('#deviceListBody').html('<tr><td colspan="6" class="text-danger">Error: ' + esc(r.message||'') + '</td></tr>'); return; }
+        if (!r.status) { $('#deviceListBody').html('<tr><td colspan="8" class="text-danger">Error: ' + esc(r.message||'') + '</td></tr>'); return; }
         var html = '';
         r.devices.forEach(function(d) {
             var sec = d.secret ? esc(d.secret) : '<span class="text-muted">N/A</span>';
             if (d.secret_source === 'Custom') sec += ' <span class="label label-info">Custom</span>';
             else if (d.secret_source === 'FreePBX') sec += ' <span class="label label-success">FreePBX</span>';
             var name = d.display_name || freepbxExtName(d.extension) || '';
+            var dmsUser = d.prov_username ? esc(d.prov_username) : '<span class="text-muted">—</span>';
+            var dmsPass = d.prov_password ? esc(d.prov_password) : '<span class="text-muted">—</span>';
             html += '<tr><td>' + esc(d.mac) + '</td><td>' + esc(d.extension) + '</td>';
             html += '<td>' + (name ? esc(name) : '<span class="text-muted">—</span>') + '</td>';
-            html += '<td>' + sec + '</td><td>' + esc(d.model) + '</td>';
+            html += '<td><code style="font-size:11px;">' + sec + '</code></td>';
+            html += '<td><code style="font-size:11px;">' + dmsUser + '</code></td>';
+            html += '<td><code style="font-size:11px;">' + dmsPass + '</code></td>';
+            html += '<td>' + esc(d.model) + '</td>';
             html += '<td style="white-space:nowrap;">';
             html += '<button class="btn btn-xs btn-default" onclick="editDevice(' + d.id + ')" title="Edit"><i class="fa fa-pencil"></i></button> ';
             html += '<button class="btn btn-xs btn-info" onclick="rebuildDevice(' + d.id + ', false)" title="Rebuild config"><i class="fa fa-refresh"></i></button> ';
@@ -755,7 +773,7 @@ function loadDevices() {
             html += '<button class="btn btn-xs btn-danger" onclick="deleteDevice(' + d.id + ')" title="Delete"><i class="fa fa-trash"></i></button>';
             html += '</td></tr>';
         });
-        $('#deviceListBody').html(html || '<tr><td colspan="6" class="text-muted">No devices yet. Click Add New to get started.</td></tr>');
+        $('#deviceListBody').html(html || '<tr><td colspan="8" class="text-muted">No devices yet. Click Add New to get started.</td></tr>');
     });
 }
 
@@ -1186,7 +1204,14 @@ function buildProvisionAssetUrl(kind, filename) {
     if (kind === 'firmware') p = 'firmware';
     else if (kind === 'ringtone') p = 'ringtones';
     else p = kind;
-    return window.location.origin + '/admin/modules/quickprovisioner/provision.php/' + p + '/' + encodeURIComponent(filename);
+    // Prefer configured public host:port so saved URLs match handset cfgs (:9080).
+    var host = ($('#globalSipHost').val() || '').trim() || window.location.hostname;
+    var port = ($('#globalHttpPort').val() || '').trim();
+    var origin = window.location.protocol + '//' + host;
+    if (port && port !== '80' && port !== '443') {
+        origin += ':' + port;
+    }
+    return origin + '/admin/modules/quickprovisioner/provision.php/' + p + '/' + encodeURIComponent(filename);
 }
 
 function loadTemplateExamples(mode, silent) {
@@ -1554,9 +1579,9 @@ function updatePageSelect() {
     // Bootstrap URL hint (TIPT-style)
     var mac = ($('#mac').val() || '').replace(/[^0-9A-Fa-f]/g, '');
     if (mac.length === 12) {
-        $('#bootstrapHint').html('Bootstrap URL: <code>…/bootstrap.php?mac=' + esc(mac.toUpperCase()) + '</code> — handset pulls a tiny redirect cfg then full provision (qsetup / DHCP option 66 friendly).').show();
+        $('#bootstrapHint').html('QSetup bootstrap: <code>…/bootstrap.php</code> (DHCP option 160). Phone shows QSetup → enter Prov user/pass. Full cfg requires <strong>Prov credentials + matching MAC</strong>.').show();
     } else {
-        $('#bootstrapHint').text('Save a MAC to see the bootstrap.php URL for zero-touch / qsetup onboarding.').show();
+        $('#bootstrapHint').html('DHCP option 160 → <code>…/bootstrap.php</code> for QSetup. Prov user/pass must match this device MAC.').show();
     }
 }
 
@@ -2693,18 +2718,24 @@ function loadGlobalSettings() {
         if (!r.status || !r.settings) return;
         $('#globalSipHost').val(r.settings.sip_server_host || '');
         $('#globalSipPort').val(r.settings.sip_server_port || '');
+        $('#globalHttpPort').val(r.settings.public_http_port || '');
+        $('#globalAuthMode').val(r.settings.auth_mode === 'qsetup' ? 'qsetup' : 'lan_open');
     });
 }
 function saveGlobalSettings() {
     ajax('save_global_settings', {
         sip_server_host: $('#globalSipHost').val(),
-        sip_server_port: $('#globalSipPort').val()
+        sip_server_port: $('#globalSipPort').val(),
+        public_http_port: $('#globalHttpPort').val(),
+        auth_mode: $('#globalAuthMode').val()
     }, function(r) {
         if (r.status) {
             $('#globalSettingsStatus').html('<span class="text-success">Saved</span>');
             if (r.settings) {
                 $('#globalSipHost').val(r.settings.sip_server_host || '');
                 $('#globalSipPort').val(r.settings.sip_server_port || '');
+                $('#globalHttpPort').val(r.settings.public_http_port || '');
+                $('#globalAuthMode').val(r.settings.auth_mode === 'qsetup' ? 'qsetup' : 'lan_open');
             }
         } else {
             $('#globalSettingsStatus').html('<span class="text-danger">' + esc(r.message || 'Save failed') + '</span>');

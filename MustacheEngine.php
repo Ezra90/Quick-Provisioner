@@ -403,7 +403,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $screensaverTimeout = $custom_options['screensaver_timeout'] ?? '0';
     $voiceVlanId      = $custom_options['voice_vlan_id'] ?? '';
     $dataVlanId       = $custom_options['data_vlan_id'] ?? '';
-    $firmwareUrl      = $custom_options['firmware_url'] ?? '';
+    $firmwareUrl      = trim((string)($custom_options['firmware_url'] ?? ''));
     $syslogServer     = $custom_options['syslog_server'] ?? '';
     $ringtoneUrl      = $custom_options['ringtone_url'] ?? '';
     $cfwAlways        = $custom_options['cfw_always'] ?? '';
@@ -427,6 +427,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
 
     // VVX1500: video over UDP fragments SIP INVITEs — prefer TCP signalling.
     $isVvx1500 = in_array($model, ['VVX1500', 'VVX 1500'], true);
+    // Firmware URL is opt-in via custom_options only (do not auto-push on every boot).
     $videoEnable = $isVvx1500 ? '1' : (string)($custom_options['video_enable'] ?? '0');
     if (array_key_exists('video_enable', $custom_options)) {
         $videoEnable = _qp_is_truthy($custom_options['video_enable']) ? '1' : '0';
@@ -1130,6 +1131,11 @@ function qp_get_global_settings() {
     $defaults = [
         'sip_server_host' => '',
         'sip_server_port' => '',
+        // WAN HTTP port for provision/media/directory URLs (UniFi forwards 9080→80).
+        // Empty = omit port (standard 80/443). Default 9080 for remote-safe cfgs.
+        'public_http_port' => '9080',
+        // lan_open = LAN MAC-only (bring-up); qsetup = Prov user/pass + MAC (default locked).
+        'auth_mode' => 'qsetup',
     ];
     try {
         $mod = \FreePBX::Quickprovisioner();
@@ -1143,25 +1149,37 @@ function qp_get_global_settings() {
         // BMO unavailable in public provision context — use SQL fallback below.
     }
 
-    if ($defaults['sip_server_host'] === '' || $defaults['sip_server_port'] === '') {
-        try {
-            $db = \FreePBX::Database();
-            $stmt = $db->query(
-                "SELECT `key`, `val` FROM kvstore_FreePBX_modules_Quickprovisioner
-                 WHERE `id` = 'noid' AND `key` IN ('sip_server_host','sip_server_port')"
-            );
-            if ($stmt) {
-                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $k = (string)($row['key'] ?? '');
-                    $v = trim((string)($row['val'] ?? ''));
-                    if ($k !== '' && $v !== '' && array_key_exists($k, $defaults) && $defaults[$k] === '') {
+    try {
+        $db = \FreePBX::Database();
+        $stmt = $db->query(
+            "SELECT `key`, `val` FROM kvstore_FreePBX_modules_Quickprovisioner
+             WHERE `id` = 'noid' AND `key` IN ('sip_server_host','sip_server_port','public_http_port','auth_mode')"
+        );
+        if ($stmt) {
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $k = (string)($row['key'] ?? '');
+                if ($k === '' || !array_key_exists($k, $defaults)) {
+                    continue;
+                }
+                $v = trim((string)($row['val'] ?? ''));
+                if ($k === 'public_http_port') {
+                    // Allow clearing to standard ports by saving empty
+                    $defaults[$k] = $v;
+                    continue;
+                }
+                if ($k === 'auth_mode') {
+                    if ($v === 'qsetup' || $v === 'lan_open') {
                         $defaults[$k] = $v;
                     }
+                    continue;
+                }
+                if ($v !== '' && $defaults[$k] === '') {
+                    $defaults[$k] = $v;
                 }
             }
-        } catch (Throwable $e) {
-            // ignore
         }
+    } catch (Throwable $e) {
+        // ignore
     }
 
     // Last resort for host: FreePBX SIP Settings → External Address (public DNS)
@@ -1180,12 +1198,27 @@ function qp_get_global_settings() {
 }
 
 /**
+ * Provision auth mode: lan_open (bring-up) or qsetup (locked).
+ */
+function qp_auth_mode() {
+    $mode = qp_get_global_settings()['auth_mode'] ?? 'qsetup';
+    return ($mode === 'qsetup') ? 'qsetup' : 'lan_open';
+}
+
+/** True when LAN clients may pull by MAC without Prov Basic Auth / QSetup. */
+function qp_lan_open_auth() {
+    return qp_auth_mode() === 'lan_open'
+        && function_exists('qp_is_local_network')
+        && qp_is_local_network();
+}
+
+/**
  * Persist a module setting to kvstore (works even when BMO class load fails).
  */
 function qp_set_global_setting($key, $value) {
     $key = (string)$key;
     $value = (string)$value;
-    if (!in_array($key, ['sip_server_host', 'sip_server_port'], true)) {
+    if (!in_array($key, ['sip_server_host', 'sip_server_port', 'public_http_port', 'auth_mode'], true)) {
         return false;
     }
     try {
@@ -1244,6 +1277,39 @@ function qp_normalize_server_host($raw) {
 }
 
 /**
+ * Append a remote provisioning auth failure for fail2ban.
+ * LAN clients are skipped (also covered by fail2ban ignoreip).
+ *
+ * Log line format (stable for filters):
+ *   2026-07-29 12:00:00 QP_AUTH_FAIL ip=203.0.113.10 mac=AABBCCDDEEFF reason=unknown_mac
+ */
+function qp_auth_fail_log($reason, $mac = '') {
+    if (function_exists('qp_is_local_network') && qp_is_local_network()) {
+        return;
+    }
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    if ($ip === '' || $ip === 'unknown') {
+        return;
+    }
+    $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
+    $reason = preg_replace('/[^a-z0-9_]/', '', strtolower((string)$reason));
+    if ($reason === '') {
+        $reason = 'auth_fail';
+    }
+    $line = date('Y-m-d H:i:s') . " QP_AUTH_FAIL ip={$ip} mac={$mac} reason={$reason}\n";
+    $path = '/var/log/asterisk/quickprovisioner-auth.log';
+    @file_put_contents($path, $line, FILE_APPEND | LOCK_EX);
+    if (function_exists('qp_log_access')) {
+        $code = ($reason === 'unknown_mac' || $reason === 'invalid_mac') ? 404 : 401;
+        try {
+            qp_log_access($code, $_SERVER['REQUEST_URI'] ?? '', $mac !== '' ? $mac : null, null, 'auth_fail');
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+}
+
+/**
  * Hostname used in phone-facing HTTP URLs (provision / media / directory).
  * Prefer global SIP host when set so remote handsets get a public DNS name.
  */
@@ -1256,6 +1322,28 @@ function qp_public_http_host() {
     $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
     $host = preg_replace('/:\d+$/', '', (string)$host);
     return $host !== '' ? $host : '127.0.0.1';
+}
+
+/**
+ * Host[:port] for phone-facing HTTP URLs.
+ * Uses Admin → public_http_port (default 9080) so remotes hit the UniFi
+ * non-standard provisioning forward instead of WAN :80.
+ */
+function qp_public_http_authority() {
+    $host = qp_public_http_host();
+    $globals = qp_get_global_settings();
+    $port = trim((string)($globals['public_http_port'] ?? ''));
+    if ($port === '' || $port === '80' || $port === '443') {
+        return $host;
+    }
+    if (!preg_match('/^\d{1,5}$/', $port) || (int)$port < 1 || (int)$port > 65535) {
+        return $host;
+    }
+    // IPv6 literals need brackets before :port
+    if (strpos($host, ':') !== false && $host[0] !== '[') {
+        $host = '[' . $host . ']';
+    }
+    return $host . ':' . $port;
 }
 
 /**
@@ -1305,7 +1393,7 @@ function qp_resolve_sip_port(array $custom_options = []) {
 function qp_build_provisioning_urls($mac) {
     $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = qp_public_http_host();
+    $host = function_exists('qp_public_http_authority') ? qp_public_http_authority() : qp_public_http_host();
     $script = "$protocol://$host/admin/modules/quickprovisioner/provision.php";
     return [
         'provisioning_base' => $script . '/',
@@ -1322,7 +1410,7 @@ function qp_build_phonebook_url($mac) {
         return '';
     }
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = qp_public_http_host();
+    $host = function_exists('qp_public_http_authority') ? qp_public_http_authority() : qp_public_http_host();
     return "$protocol://$host/admin/modules/quickprovisioner/provision.php?mac=$mac&type=phonebook";
 }
 
@@ -1331,7 +1419,293 @@ function qp_build_phonebook_url($mac) {
  */
 function qp_build_polycom_contacts_directory_url() {
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = qp_public_http_host();
+    $host = function_exists('qp_public_http_authority') ? qp_public_http_authority() : qp_public_http_host();
     // Trailing slash: phone appends {mac}-directory.xml
     return "$protocol://$host/admin/modules/quickprovisioner/provision.php/";
+}
+
+/**
+ * Public URL for a firmware binary under provision.php/firmware/.
+ */
+function qp_build_firmware_asset_url($filename) {
+    $filename = basename((string)$filename);
+    if ($filename === '' || $filename === '.' || $filename === '..') {
+        return '';
+    }
+    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = function_exists('qp_public_http_authority') ? qp_public_http_authority() : qp_public_http_host();
+    return "$protocol://$host/admin/modules/quickprovisioner/provision.php/firmware/" . rawurlencode($filename);
+}
+
+/** Default VVX1500 UC image shipped in assets/firmware/. */
+function qp_default_vvx1500_firmware_url() {
+    return qp_build_firmware_asset_url('2345-17960-001.sip.ld');
+}
+
+/**
+ * Look up device by Prov user/pass. Returns null if missing/invalid.
+ */
+function qp_find_device_by_prov_auth($user, $pass) {
+    if ($user === '' || $pass === '') {
+        return null;
+    }
+    try {
+        $stmt = \FreePBX::Database()->query(
+            "SELECT * FROM quickprovisioner_devices WHERE prov_username IS NOT NULL AND prov_username != '' AND prov_password IS NOT NULL AND prov_password != ''"
+        );
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if (hash_equals((string)$row['prov_username'], (string)$user)
+                && hash_equals((string)$row['prov_password'], (string)$pass)) {
+                return $row;
+            }
+        }
+    } catch (Exception $e) {
+        return null;
+    }
+    return null;
+}
+
+/**
+ * FreePBX Intrusion Detection / fail2ban whitelist is IP-based.
+ * Quick-Provisioner keeps a managed block keyed by handset MAC so add/delete
+ * in QP stays in sync. IPs are taken from PJSIP contacts + recent provision hits.
+ */
+function qp_firewall_whitelist_markers() {
+    return [
+        'begin' => '# BEGIN QUICKPROVISIONER-MAC-WHITELIST',
+        'end'   => '# END QUICKPROVISIONER-MAC-WHITELIST',
+    ];
+}
+
+function qp_normalize_whitelist_ip($ip) {
+    $ip = trim((string)$ip);
+    if ($ip === '' || $ip === '::1' || $ip === '127.0.0.1') {
+        return '';
+    }
+    // Strip port / zone id
+    if (strpos($ip, '%') !== false) {
+        $ip = explode('%', $ip, 2)[0];
+    }
+    if (preg_match('/^\[([^\]]+)\]:\d+$/', $ip, $m)) {
+        $ip = $m[1];
+    } elseif (preg_match('/^(\d+\.\d+\.\d+\.\d+):\d+$/', $ip, $m)) {
+        $ip = $m[1];
+    }
+    if (filter_var($ip, FILTER_VALIDATE_IP)) {
+        return $ip;
+    }
+    return '';
+}
+
+/**
+ * Collect current IPs associated with a QP device (SIP contact + access log).
+ */
+function qp_collect_ips_for_device($mac, $extension = '') {
+    $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
+    $ips = [];
+    $extension = preg_replace('/[^0-9A-Za-z_-]/', '', (string)$extension);
+
+    try {
+        $db = \FreePBX::Database();
+        if ($mac !== '') {
+            $stmt = $db->prepare(
+                "SELECT DISTINCT client_ip FROM quickprovisioner_access_log
+                 WHERE mac = ? AND status_code = 200 AND client_ip IS NOT NULL AND client_ip != ''
+                   AND (
+                     user_agent LIKE '%Polycom%'
+                     OR user_agent LIKE '%FileTransport%'
+                     OR user_agent LIKE '%Yealink%'
+                     OR user_agent LIKE '%Cisco%'
+                     OR user_agent LIKE '%VTech%'
+                   )
+                 ORDER BY id DESC LIMIT 20"
+            );
+            $stmt->execute([$mac]);
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $ip = qp_normalize_whitelist_ip($row['client_ip'] ?? '');
+                if ($ip !== '' && !qp_is_self_ip($ip)) {
+                    $ips[$ip] = true;
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    if ($extension !== '') {
+        $out = [];
+        @exec('asterisk -rx ' . escapeshellarg("pjsip show contacts") . ' 2>/dev/null', $out);
+        $text = implode("\n", $out);
+        // Match lines mentioning this extension's AOR/contact
+        if (preg_match_all('/\b' . preg_quote($extension, '/') . '\b[^\n]*?@([0-9a-fA-F\.:]+)/', $text, $mm)) {
+            foreach ($mm[1] as $raw) {
+                $ip = qp_normalize_whitelist_ip($raw);
+                if ($ip !== '' && !qp_is_self_ip($ip)) {
+                    $ips[$ip] = true;
+                }
+            }
+        }
+        // Also try endpoint-specific
+        $out2 = [];
+        @exec('asterisk -rx ' . escapeshellarg("pjsip show contacts {$extension}") . ' 2>/dev/null', $out2);
+        foreach ($out2 as $line) {
+            if (preg_match('/@([0-9a-fA-F\.:]+)/', $line, $m)) {
+                $ip = qp_normalize_whitelist_ip($m[1]);
+                if ($ip !== '' && !qp_is_self_ip($ip)) {
+                    $ips[$ip] = true;
+                }
+            }
+        }
+    }
+
+    return array_keys($ips);
+}
+
+/** True if IP is this PBX (should not be fail2ban-whitelisted as a "handset"). */
+function qp_is_self_ip($ip) {
+    static $self = null;
+    if ($self === null) {
+        $self = ['127.0.0.1' => true, '::1' => true];
+        // Prefer request/server addr + all host IPs — never hardcode a site LAN IP.
+        foreach ([$_SERVER['SERVER_ADDR'] ?? ''] as $cand) {
+            $n = qp_normalize_whitelist_ip($cand);
+            if ($n !== '') {
+                $self[$n] = true;
+            }
+        }
+        $out = [];
+        @exec('hostname -I 2>/dev/null', $out);
+        foreach (preg_split('/\s+/', implode(' ', $out)) as $cand) {
+            $n = qp_normalize_whitelist_ip($cand);
+            if ($n !== '') {
+                $self[$n] = true;
+            }
+        }
+    }
+    return isset($self[$ip]);
+}
+
+/**
+ * Rebuild FreePBX Firewall Intrusion Detection custom_whitelist managed block
+ * from all Quick-Provisioner devices (MAC + known IPs).
+ */
+function qp_sync_firewall_mac_whitelist() {
+    $markers = qp_firewall_whitelist_markers();
+    $lines = [$markers['begin'], '# Managed by Quick-Provisioner — do not edit by hand'];
+
+    try {
+        $rows = \FreePBX::Database()->query(
+            "SELECT mac, extension FROM quickprovisioner_devices ORDER BY extension, mac"
+        )->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('Quick-Provisioner: firewall whitelist sync failed to list devices - ' . $e->getMessage());
+        return false;
+    }
+
+    $allIps = [];
+    foreach ($rows as $row) {
+        $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)($row['mac'] ?? '')));
+        if (strlen($mac) !== 12) {
+            continue;
+        }
+        $ext = (string)($row['extension'] ?? '');
+        $lines[] = '# MAC=' . $mac . ($ext !== '' ? (' EXT=' . $ext) : '');
+        foreach (qp_collect_ips_for_device($mac, $ext) as $ip) {
+            $lines[] = $ip;
+            $allIps[$ip] = true;
+        }
+    }
+    $lines[] = $markers['end'];
+    $managedBlock = implode("\n", $lines);
+
+    // Persist MAC inventory for UI / debugging
+    try {
+        if (function_exists('qp_set_global_setting')) {
+            // qp_set_global_setting only allows known keys — write SQL directly
+            $db = \FreePBX::Database();
+            $db->prepare(
+                "DELETE FROM kvstore_FreePBX_modules_Quickprovisioner WHERE `id` = 'noid' AND `key` = ?"
+            )->execute(['firewall_mac_whitelist']);
+            $payload = json_encode([
+                'updated_at' => date('c'),
+                'macs' => array_values(array_filter(array_map(function ($r) {
+                    return strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)($r['mac'] ?? '')));
+                }, $rows))),
+                'ips' => array_keys($allIps),
+            ]);
+            $db->prepare(
+                "INSERT INTO kvstore_FreePBX_modules_Quickprovisioner (`key`, `val`, `type`, `id`) VALUES (?, ?, NULL, 'noid')"
+            )->execute(['firewall_mac_whitelist', $payload]);
+        }
+    } catch (Throwable $e) {
+        // non-fatal
+    }
+
+    try {
+        $fw = \FreePBX::Firewall();
+    } catch (Throwable $e) {
+        error_log('Quick-Provisioner: Firewall module unavailable for MAC whitelist sync');
+        return false;
+    }
+
+    $current = (string)$fw->getConfig('custom_whitelist');
+    $current = str_replace(["\r\n", "\r"], "\n", $current);
+    // Strip previous managed block
+    $pattern = '/' . preg_quote($markers['begin'], '/') . '.*?' . preg_quote($markers['end'], '/') . '\s*/s';
+    $current = preg_replace($pattern, '', $current);
+    $current = trim($current);
+    $new = $current === '' ? $managedBlock : ($current . "\n" . $managedBlock);
+    $fw->setConfig('custom_whitelist', $new);
+
+    // Ask Firewall/Sysadmin to push whitelist into fail2ban when available
+    try {
+        if (method_exists($fw, 'sync')) {
+            // no-op if not
+        }
+        if (method_exists($fw, 'runHook')) {
+            try {
+                $fw->runHook('get-dynamic-ignoreip');
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
+        if (class_exists('FreePBX') && method_exists('\FreePBX', 'Sysadmin')) {
+            try {
+                \FreePBX::Sysadmin()->runHook('fail2ban-generate');
+            } catch (Throwable $e) {
+                // Sysadmin may be incomplete on some boxes
+            }
+        }
+    } catch (Throwable $e) {
+        // non-fatal — whitelist is stored for next ID apply
+    }
+
+    // Keep host fail2ban ignore list in sync when we can write jail.d (needs root via sudo)
+    qp_write_fail2ban_qp_ignore(array_keys($allIps));
+
+    return true;
+}
+
+/**
+ * Optional host fail2ban ignoreip drop-in for QP handset IPs.
+ */
+function qp_write_fail2ban_qp_ignore(array $ips) {
+    $ips = array_values(array_filter(array_map('qp_normalize_whitelist_ip', $ips)));
+    $path = '/etc/fail2ban/jail.d/quickprovisioner-whitelist.local';
+    $body = "# Managed by Quick-Provisioner — do not edit\n[DEFAULT]\n";
+    if ($ips) {
+        $body .= 'ignoreip = 127.0.0.1/8 ::1 ' . implode(' ', $ips) . "\n";
+    } else {
+        $body .= "ignoreip = 127.0.0.1/8 ::1\n";
+    }
+    $tmp = '/tmp/qp-f2b-whitelist.local';
+    if (@file_put_contents($tmp, $body) === false) {
+        return false;
+    }
+    // Best-effort; may fail without passwordless sudo
+    $cmd = 'sudo cp ' . escapeshellarg($tmp) . ' ' . escapeshellarg($path)
+        . ' && sudo fail2ban-client reload 2>/dev/null';
+    @exec($cmd, $out, $code);
+    @unlink($tmp);
+    return $code === 0;
 }

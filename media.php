@@ -39,40 +39,108 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 $authorized = false;
+$auth_device = null;
 $mac = isset($_GET['mac']) ? strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', $_GET['mac'])) : null;
 
-// Local network always authorized
-if (qp_is_local_network()) {
+// FreePBX admin GUI previews (any upload allowed for operators)
+$is_admin_preview = isset($_SESSION['AMP_user']) && is_object($_SESSION['AMP_user']);
+if ($is_admin_preview) {
     $authorized = true;
-}
-
-// Check session auth (FreePBX admin logged in)
-if (!$authorized && isset($_SESSION['AMP_user']) && is_object($_SESSION['AMP_user'])) {
-    $authorized = true;
-}
-
-// Check per-device provisioning auth for remote requests
-if (!$authorized && $mac && isset($_SERVER['PHP_AUTH_USER'])) {
-    $stmt = \FreePBX::Database()->prepare("SELECT prov_username, prov_password FROM quickprovisioner_devices WHERE mac=?");
-    $stmt->execute([$mac]);
-    $device = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($device && !empty($device['prov_username']) && !empty($device['prov_password'])) {
-        if ($_SERVER['PHP_AUTH_USER'] === $device['prov_username'] && ($_SERVER['PHP_AUTH_PW'] ?? '') === $device['prov_password']) {
-            $authorized = true;
-        }
-    }
-}
-
-if (!$authorized) {
-    header('WWW-Authenticate: Basic realm="Phone Provisioning"');
-    header('HTTP/1.0 401 Unauthorized');
-    die('Access Denied');
 }
 
 $file = $_GET['file'] ?? '';
 $pathInfo = $_SERVER['PATH_INFO'] ?? '';
 if ($file === '' && $pathInfo !== '') {
-    $file = basename((string)$pathInfo);
+    // PATH_INFO may be "/vvx1500HH.jpg" or include a query-looking suffix from some UAs
+    $file = basename(urldecode((string)$pathInfo));
+    if (($q = strpos($file, '?')) !== false) {
+        $file = substr($file, 0, $q);
+    }
+}
+$file = basename((string)$file);
+
+require_once __DIR__ . '/MustacheEngine.php';
+
+// Infer MAC from wallpaper ownership when not provided
+if (empty($mac) && $file !== '') {
+    try {
+        $stmt = \FreePBX::Database()->prepare(
+            "SELECT mac FROM quickprovisioner_devices WHERE wallpaper = ? OR wallpaper LIKE ? ORDER BY id DESC LIMIT 1"
+        );
+        $stmt->execute([$file, '%/' . $file]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row && !empty($row['mac'])) {
+            $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$row['mac']));
+        }
+    } catch (Exception $e) {
+        // continue
+    }
+}
+
+// Resolve device row for ownership checks
+if (!empty($mac) && strlen($mac) === 12) {
+    try {
+        $stmt = \FreePBX::Database()->prepare("SELECT * FROM quickprovisioner_devices WHERE mac=?");
+        $stmt->execute([$mac]);
+        $auth_device = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    } catch (Exception $e) {
+        $auth_device = null;
+    }
+}
+
+// Prov Basic Auth: try MAC-bound device first, then fall back to credential lookup.
+// Shared wallpapers can infer the wrong MAC — do not stop at a failed MAC match.
+if (!$authorized && isset($_SERVER['PHP_AUTH_USER'])) {
+    $user = (string)$_SERVER['PHP_AUTH_USER'];
+    $pass = (string)($_SERVER['PHP_AUTH_PW'] ?? '');
+    $matched = false;
+    if ($auth_device && !empty($auth_device['prov_username']) && !empty($auth_device['prov_password'])) {
+        if (hash_equals((string)$auth_device['prov_username'], $user)
+            && hash_equals((string)$auth_device['prov_password'], $pass)) {
+            $authorized = true;
+            $matched = true;
+        }
+    }
+    if (!$matched && function_exists('qp_find_device_by_prov_auth')) {
+        $byCreds = qp_find_device_by_prov_auth($user, $pass);
+        if ($byCreds) {
+            $auth_device = $byCreds;
+            $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)($byCreds['mac'] ?? '')));
+            $authorized = true;
+        }
+    }
+}
+
+// LAN bring-up: MAC-known device may pull without Prov prompt
+if (!$authorized && function_exists('qp_lan_open_auth') && qp_lan_open_auth() && $auth_device) {
+    $authorized = true;
+}
+
+if (!$authorized) {
+    if (function_exists('qp_auth_fail_log')) {
+        qp_auth_fail_log(isset($_SERVER['PHP_AUTH_USER']) ? 'bad_auth' : 'no_auth', (string)$mac);
+    }
+    header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+    header('HTTP/1.0 401 Unauthorized');
+    die('Access Denied');
+}
+
+// Non-admin: only serve the wallpaper assigned to the authenticated / LAN device
+if (!$is_admin_preview && $auth_device) {
+    $owned = basename((string)($auth_device['wallpaper'] ?? ''));
+    if ($file === '' && $owned !== '') {
+        $file = $owned;
+    } elseif ($file !== '' && $owned !== '' && !hash_equals($owned, $file)) {
+        http_response_code(403);
+        die('Wallpaper not assigned to this device');
+    } elseif ($file !== '' && $owned === '') {
+        http_response_code(404);
+        die('No wallpaper configured');
+    }
+} elseif (!$is_admin_preview && $file !== '') {
+    // Authorized somehow without a device row — refuse arbitrary uploads
+    http_response_code(403);
+    die('Device context required');
 }
 $req_w = (int)($_GET['w'] ?? 0);
 $req_h = (int)($_GET['h'] ?? 0);

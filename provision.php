@@ -58,22 +58,29 @@ function qp_log_access($status_code, $path, $mac, $extension, $resource_type) {
 }
 
 /**
- * Validate remote Basic Auth against a device's prov_username/prov_password.
+ * Require QSetup-style Basic Auth (prov_username/prov_password) for a device.
+ * Always enforced (LAN + WAN). Pair with MAC checks for dual-factor binding.
  */
 function qp_check_device_basic_auth(array $device) {
-    if (qp_is_local_network()) {
-        return true;
-    }
     $prov_user = $device['prov_username'] ?? '';
     $prov_pass = $device['prov_password'] ?? '';
+    $mac = (string)($device['mac'] ?? '');
     if ($prov_user === '' || $prov_pass === '') {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('missing_creds', $mac);
+        }
         header('WWW-Authenticate: Basic realm="Phone Provisioning"');
         header('HTTP/1.0 401 Unauthorized');
         die('Authentication required');
     }
     $user = $_SERVER['PHP_AUTH_USER'] ?? '';
     $pass = $_SERVER['PHP_AUTH_PW'] ?? '';
-    if ($user !== $prov_user || $pass !== $prov_pass) {
+    if ($user === '' || $pass === ''
+        || !hash_equals((string)$prov_user, (string)$user)
+        || !hash_equals((string)$prov_pass, (string)$pass)) {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log($user === '' ? 'no_auth' : 'bad_auth', $mac);
+        }
         header('WWW-Authenticate: Basic realm="Phone Provisioning"');
         header('HTTP/1.0 401 Unauthorized');
         die('Authentication required');
@@ -82,43 +89,71 @@ function qp_check_device_basic_auth(array $device) {
 }
 
 /**
- * For shared assets (ringtones/firmware): require local net OR Basic Auth that
- * matches any Quick-Provisioner device with provisioning credentials set.
- * Returns the matched device row or true on local network.
+ * Dual-factor: Prov credentials must match the device for this MAC.
+ * In lan_open mode, local-network clients skip auth (bring-up / no QSetup).
+ */
+function qp_require_mac_and_prov_auth(array $device) {
+    if (function_exists('qp_lan_open_auth') && qp_lan_open_auth()) {
+        return true;
+    }
+    qp_check_device_basic_auth($device);
+    $user = $_SERVER['PHP_AUTH_USER'] ?? '';
+    $pass = $_SERVER['PHP_AUTH_PW'] ?? '';
+    $authed = qp_find_device_by_prov_auth($user, $pass);
+    $wantMac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)($device['mac'] ?? '')));
+    $gotMac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)($authed['mac'] ?? '')));
+    if (!$authed || $wantMac === '' || $gotMac === '' || !hash_equals($wantMac, $gotMac)) {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('mac_mismatch', $wantMac);
+        }
+        header('WWW-Authenticate: Basic realm="Phone Provisioning"');
+        header('HTTP/1.0 401 Unauthorized');
+        die('Authentication required');
+    }
+    return true;
+}
+
+/**
+ * Shared assets (ringtones/firmware/phonebook): require Prov auth.
+ * When preferred_mac is set, credentials must belong to that MAC.
  */
 function qp_check_asset_basic_auth($preferred_mac = null) {
-    if (qp_is_local_network()) {
+    if (function_exists('qp_lan_open_auth') && qp_lan_open_auth()) {
         return true;
     }
     $user = $_SERVER['PHP_AUTH_USER'] ?? '';
     $pass = $_SERVER['PHP_AUTH_PW'] ?? '';
     if ($user === '' || $pass === '') {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('no_auth', (string)$preferred_mac);
+        }
         header('WWW-Authenticate: Basic realm="Phone Provisioning"');
         header('HTTP/1.0 401 Unauthorized');
         die('Authentication required');
     }
 
-    // Prefer binding auth to a specific MAC when known (phonebook files).
     if ($preferred_mac) {
         $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', $preferred_mac));
         $stmt = \FreePBX::Database()->prepare("SELECT * FROM quickprovisioner_devices WHERE mac=?");
         $stmt->execute([$mac]);
         $device = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($device) {
-            qp_check_device_basic_auth($device);
+            qp_require_mac_and_prov_auth($device);
             return $device;
+        }
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('unknown_mac', $mac);
         }
         http_response_code(404);
         die('Device not found');
     }
 
-    $stmt = \FreePBX::Database()->query(
-        "SELECT * FROM quickprovisioner_devices WHERE prov_username IS NOT NULL AND prov_username != '' AND prov_password IS NOT NULL AND prov_password != ''"
-    );
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        if (hash_equals((string)$row['prov_username'], $user) && hash_equals((string)$row['prov_password'], $pass)) {
-            return $row;
-        }
+    $device = qp_find_device_by_prov_auth($user, $pass);
+    if ($device) {
+        return $device;
+    }
+    if (function_exists('qp_auth_fail_log')) {
+        qp_auth_fail_log('bad_auth', '');
     }
     header('WWW-Authenticate: Basic realm="Phone Provisioning"');
     header('HTTP/1.0 401 Unauthorized');
@@ -171,6 +206,9 @@ function qp_poly_primary_config(string $mac): string {
 function qp_serve_device_config($mac, $requested_filename = null) {
     $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
     if (strlen($mac) !== 12 || !ctype_xdigit($mac)) {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('invalid_mac', $mac);
+        }
         http_response_code(400);
         die('Invalid or no MAC provided');
     }
@@ -180,16 +218,20 @@ function qp_serve_device_config($mac, $requested_filename = null) {
     $device = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$device) {
         \FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "Device not found for MAC: $mac");
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('unknown_mac', $mac);
+        }
         http_response_code(404);
         die('Device not found');
     }
 
-    if (!qp_is_local_network()) {
-        if (empty($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on') {
+    if (empty($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on') {
+        if (!function_exists('qp_is_local_network') || !qp_is_local_network()) {
             \FreePBX::create()->Logger->log(FPBX_LOG_WARNING, "WARNING: Remote provisioning over HTTP (non-HTTPS) for MAC: $mac");
         }
-        qp_check_device_basic_auth($device);
     }
+    // QSetup + MAC: Prov user/pass must match this device's MAC.
+    qp_require_mac_and_prov_auth($device);
 
     $model = basename($device['model']);
     $template_path = qp_resolve_template_file($model, __DIR__ . '/templates');
@@ -294,10 +336,12 @@ function qp_serve_device_config($mac, $requested_filename = null) {
     $wallpaper_url = '';
     if (!empty($device['wallpaper'])) {
         $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
-        $host = function_exists('qp_public_http_host') ? qp_public_http_host() : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
+        $host = function_exists('qp_public_http_authority')
+            ? qp_public_http_authority()
+            : (function_exists('qp_public_http_host') ? qp_public_http_host() : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1'));
         $wallpaper_file = rawurlencode((string)$device['wallpaper']);
-        // Path-style URL (Poly-friendly). media.php infers model/insets from the
-        // device that owns this wallpaper so VVX1500 hotkeys don't cover the logo.
+        // Path-style URL only — Poly VVX often rejects / mishandles ?query on bm.1.name.
+        // media.php infers MAC from wallpaper ownership when mac= is omitted.
         $wallpaper_url = "$protocol://$host/admin/modules/quickprovisioner/media.php/$wallpaper_file";
     }
 
@@ -340,6 +384,14 @@ function qp_serve_device_config($mac, $requested_filename = null) {
     header("Content-Type: $content_type");
     header("Content-Disposition: inline; filename=\"$safe_filename\"");
     qp_log_access(200, $request_uri, $mac, $ext, 'config');
+    // Refresh Intrusion Detection whitelist with this handset's client IP
+    if (function_exists('qp_sync_firewall_mac_whitelist')) {
+        try {
+            qp_sync_firewall_mac_whitelist();
+        } catch (Throwable $e) {
+            // never break provisioning
+        }
+    }
     echo $output;
     exit;
 }
@@ -350,6 +402,9 @@ function qp_serve_device_config($mac, $requested_filename = null) {
 if (isset($_GET['type']) && in_array($_GET['type'], ['phonebook', 'directory'], true)) {
     $mac = isset($_GET['mac']) ? strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', $_GET['mac'])) : '';
     if (strlen($mac) !== 12 || !ctype_xdigit($mac)) {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('invalid_mac', $mac);
+        }
         http_response_code(400);
         die('Invalid MAC');
     }
@@ -357,10 +412,13 @@ if (isset($_GET['type']) && in_array($_GET['type'], ['phonebook', 'directory'], 
     $stmt->execute([$mac]);
     $device = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$device) {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('unknown_mac', $mac);
+        }
         http_response_code(404);
         die('Device not found');
     }
-    qp_check_device_basic_auth($device);
+    qp_require_mac_and_prov_auth($device);
     $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
     $contacts = qp_apply_poly_directory_speed_dials($device, $contacts);
     if (empty($contacts)) {
@@ -384,10 +442,21 @@ $path_info = $_SERVER['PATH_INFO'] ?? '';
 $request_uri_for_dir = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '';
 $dir_basename = basename($path_info !== '' ? $path_info : $request_uri_for_dir);
 if (strcasecmp($dir_basename, '000000000000.cfg') === 0) {
+    // Discovery stub (no secrets). QSetup off on LAN when auth_mode=lan_open.
+    $base = function_exists('qp_build_provisioning_urls')
+        ? (qp_build_provisioning_urls('000000000000')['provisioning_base'] ?? '')
+        : '';
+    $qsetupOn = (function_exists('qp_lan_open_auth') && qp_lan_open_auth()) ? '0' : '1';
     header('Content-Type: application/xml');
     header('Content-Disposition: inline; filename="000000000000.cfg"');
-    echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n"
-        . '<APPLICATION APP_FILE_PATH="sip.ld" CONFIG_FILES="[PHONE_MAC_ADDRESS]-prov.cfg" />' . "\n";
+    echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n";
+    echo "<PHONE_CONFIG>\n";
+    echo "  <APPLICATION APP_FILE_PATH=\"sip.ld\" CONFIG_FILES=\"[PHONE_MAC_ADDRESS]-prov.cfg\" />\n";
+    echo "  <prov prov.quickSetup.enabled=\"{$qsetupOn}\" prov.quickSetup.limitServerDetails=\"1\" />\n";
+    if ($base !== '') {
+        echo "  <DEVICE device.set=\"1\" device.prov.serverName=\"" . htmlspecialchars($base, ENT_QUOTES) . "\" device.prov.serverType=\"HTTP\" />\n";
+    }
+    echo "</PHONE_CONFIG>\n";
     qp_log_access(200, $request_uri_for_dir, null, null, 'config');
     exit;
 }
@@ -410,10 +479,13 @@ if ($dir_basename && preg_match('/^([A-Fa-f0-9]{12})-directory\.xml$/i', $dir_ba
     $stmt->execute([$mac]);
     $device = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$device) {
+        if (function_exists('qp_auth_fail_log')) {
+            qp_auth_fail_log('unknown_mac', $mac);
+        }
         http_response_code(404);
         die('Device not found');
     }
-    qp_check_device_basic_auth($device);
+    qp_require_mac_and_prov_auth($device);
     $contacts = qp_normalize_contacts($device['contacts_json'] ?? '[]');
     $contacts = qp_apply_poly_directory_speed_dials($device, $contacts);
     if (empty($contacts)) {

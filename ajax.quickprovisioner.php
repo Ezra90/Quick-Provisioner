@@ -392,6 +392,14 @@ switch ($action) {
             ];
             qp_save_phonebook_for_device($saved, $contacts_norm);
             \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device saved: MAC=" . $form['mac']);
+            // Sync MAC (+ known IPs) into FreePBX Intrusion Detection / fail2ban whitelist
+            if (function_exists('qp_sync_firewall_mac_whitelist')) {
+                try {
+                    qp_sync_firewall_mac_whitelist();
+                } catch (Throwable $e) {
+                    error_log('Quick-Provisioner: firewall MAC whitelist sync on save failed - ' . $e->getMessage());
+                }
+            }
             $response = ['status' => true, 'id' => $saved_id];
         } catch (Exception $e) {
             error_log("Quick-Provisioner: Error saving device - " . $e->getMessage());
@@ -435,6 +443,11 @@ switch ($action) {
             ? qp_normalize_server_host($_POST['sip_server_host'] ?? '')
             : trim((string)($_POST['sip_server_host'] ?? ''));
         $port = trim((string)($_POST['sip_server_port'] ?? ''));
+        $httpPort = trim((string)($_POST['public_http_port'] ?? '9080'));
+        $authMode = trim((string)($_POST['auth_mode'] ?? 'lan_open'));
+        if ($authMode !== 'qsetup') {
+            $authMode = 'lan_open';
+        }
         // Hostnames, IPv4, IPv6 literals — reject paths/spaces after normalize
         if ($host !== '' && !preg_match('/^[A-Za-z0-9._:\-\[\]]+$/', $host)) {
             $response['message'] = 'Invalid SIP server hostname (use host only, e.g. pbx.example.com)';
@@ -444,14 +457,22 @@ switch ($action) {
             $response['message'] = 'Invalid SIP port';
             break;
         }
+        if ($httpPort !== '' && !preg_match('/^\d{1,5}$/', $httpPort)) {
+            $response['message'] = 'Invalid public HTTP port';
+            break;
+        }
         try {
             if (function_exists('qp_set_global_setting')) {
                 qp_set_global_setting('sip_server_host', $host);
                 qp_set_global_setting('sip_server_port', $port);
+                qp_set_global_setting('public_http_port', $httpPort);
+                qp_set_global_setting('auth_mode', $authMode);
             } else {
                 $mod = \FreePBX::Quickprovisioner();
                 $mod->setConfig('sip_server_host', $host);
                 $mod->setConfig('sip_server_port', $port);
+                $mod->setConfig('public_http_port', $httpPort);
+                $mod->setConfig('auth_mode', $authMode);
             }
             $response = ['status' => true, 'settings' => qp_get_global_settings()];
         } catch (Exception $e) {
@@ -503,7 +524,9 @@ switch ($action) {
                 'display_name' => $displayName,
                 'model' => $row['model'],
                 'secret' => $secret,
-                'secret_source' => $secretSource
+                'secret_source' => $secretSource,
+                'prov_username' => $row['prov_username'] ?? '',
+                'prov_password' => $row['prov_password'] ?? '',
             ];
         }
         $response = ['status' => true, 'devices' => $devices];
@@ -512,9 +535,23 @@ switch ($action) {
     case 'delete_device':
         $id = $_REQUEST['id'] ?? null;
         if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
+        $mac = '';
+        try {
+            $row = qp_db_exec("SELECT mac FROM quickprovisioner_devices WHERE id=?", [(int)$id])->fetch(PDO::FETCH_ASSOC);
+            $mac = $row['mac'] ?? '';
+        } catch (Exception $e) {
+            // continue
+        }
         $stmt = qp_db_exec("DELETE FROM quickprovisioner_devices WHERE id=?", [(int)$id]);
         if ($stmt->rowCount() > 0) {
-            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device deleted: ID=$id");
+            \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device deleted: ID=$id MAC=$mac");
+            if (function_exists('qp_sync_firewall_mac_whitelist')) {
+                try {
+                    qp_sync_firewall_mac_whitelist();
+                } catch (Throwable $e) {
+                    error_log('Quick-Provisioner: firewall MAC whitelist sync on delete failed - ' . $e->getMessage());
+                }
+            }
             $response = ['status' => true];
         } else {
             $response['message'] = 'Device not found';
@@ -572,16 +609,20 @@ switch ($action) {
         $wpUrl = "";
         if (!empty($device['wallpaper'])) {
             $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
-            $host = function_exists('qp_public_http_host') ? qp_public_http_host() : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
+            $host = function_exists('qp_public_http_authority')
+                ? qp_public_http_authority()
+                : (function_exists('qp_public_http_host') ? qp_public_http_host() : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1'));
             $mac_clean = strtoupper(preg_replace('/[^A-F0-9]/', '', $device['mac']));
-            $wpUrl = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=" . $mac_clean;
+            $wpFile = rawurlencode(basename((string)$device['wallpaper']));
+            // Path-style (no query) — matches phone-facing provision.php URLs
+            $wpUrl = "$protocol://$host/admin/modules/quickprovisioner/media.php/$wpFile";
             // Append screen dimensions from Mustache META wallpaper_specs
             $wallpaper_specs = $meta['wallpaper_specs'] ?? [];
             $modelUpper = strtoupper($model);
             if (isset($wallpaper_specs[$model])) {
-                $wpUrl .= "&w=" . (int)$wallpaper_specs[$model]['width'] . "&h=" . (int)$wallpaper_specs[$model]['height'];
+                $wpUrl .= "?w=" . (int)$wallpaper_specs[$model]['width'] . "&h=" . (int)$wallpaper_specs[$model]['height'];
             } elseif (isset($wallpaper_specs[$modelUpper])) {
-                $wpUrl .= "&w=" . (int)$wallpaper_specs[$modelUpper]['width'] . "&h=" . (int)$wallpaper_specs[$modelUpper]['height'];
+                $wpUrl .= "?w=" . (int)$wallpaper_specs[$modelUpper]['width'] . "&h=" . (int)$wallpaper_specs[$modelUpper]['height'];
             }
         }
 
