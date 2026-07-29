@@ -75,14 +75,14 @@ if (is_readable($module_xml_path)) {
             <button class="btn btn-success" onclick="newDevice()"><i class="fa fa-plus"></i> Add New</button>
             <button class="btn btn-default" onclick="loadDevices()"><i class="fa fa-refresh"></i> Refresh</button>
             <table class="table table-striped" style="margin-top:15px;">
-                <thead><tr><th>MAC</th><th>Extension</th><th>Secret</th><th>Model</th><th>Actions</th></tr></thead>
+                <thead><tr><th>MAC</th><th>Extension</th><th>Name</th><th>Secret</th><th>Model</th><th>Actions</th></tr></thead>
                 <tbody id="deviceListBody"></tbody>
             </table>
         </div>
 
         <!-- ==================== TAB 2: DEVICE EDITOR ==================== -->
         <div id="tab-editor" class="tab-pane fade">
-            <form id="deviceForm">
+            <div id="deviceForm">
                 <input type="hidden" id="deviceId" name="deviceId">
                 <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
                 <input type="hidden" id="extension" name="extension">
@@ -187,12 +187,12 @@ if (is_readable($module_xml_path)) {
                                 <div class="panel-group">
                                     <div class="panel panel-default">
                                         <div class="panel-heading" style="cursor:pointer;" onclick="$('#advTemplateOverride').collapse('toggle');">
-                                            <h4 class="panel-title"><i class="fa fa-caret-right"></i> Custom Template Override</h4>
+                                            <h4 class="panel-title"><i class="fa fa-caret-right"></i> Per-device template override</h4>
                                         </div>
                                         <div id="advTemplateOverride" class="panel-collapse collapse">
                                             <div class="panel-body">
-                                                <textarea id="custom_template_override" name="custom_template_override" class="form-control" rows="6" placeholder="Paste custom template here..."></textarea>
-                                                <p class="text-warning"><small>Overrides the model template entirely.</small></p>
+                                                <textarea id="custom_template_override" name="custom_template_override" class="form-control" rows="6" placeholder="Leave blank to use the model template from the Templates tab..."></textarea>
+                                                <p class="text-warning"><small>Advanced: replaces the shared model template for <em>this device only</em>. To edit Poly/Yealink/Cisco templates for everyone, use the <strong>Templates</strong> tab.</small></p>
                                             </div>
                                         </div>
                                     </div>
@@ -200,7 +200,7 @@ if (is_readable($module_xml_path)) {
 
                                 <hr>
 
-                                <button type="submit" class="btn btn-success btn-block btn-lg"><i class="fa fa-save"></i> Save Device</button>
+                                <button type="button" class="btn btn-success btn-block btn-lg" onclick="saveDevice()"><i class="fa fa-save"></i> Save Device</button>
                                 <button type="button" class="btn btn-info btn-block" onclick="previewConfig()"><i class="fa fa-eye"></i> Preview Config</button>
                             </div>
                         </div>
@@ -211,11 +211,11 @@ if (is_readable($module_xml_path)) {
                         <div class="panel panel-default">
                             <div class="panel-heading"><strong id="rightColHeader">Select a Model to Load Template</strong></div>
                             <div class="panel-body">
-                                <ul class="nav nav-tabs" role="tablist">
-                                    <li class="active"><a data-toggle="tab" href="#sub-settings">Settings</a></li>
-                                    <li><a data-toggle="tab" href="#sub-wallpaper">Wallpaper</a></li>
-                                    <li><a data-toggle="tab" href="#sub-buttons">Button Layout</a></li>
-                                    <li><a data-toggle="tab" href="#sub-contacts" onclick="loadContacts()">Contacts</a></li>
+                                <ul class="nav nav-tabs" role="tablist" id="editorSubTabs">
+                                    <li class="active"><a href="#sub-settings" data-toggle="tab" data-qp-subtab="1">Settings</a></li>
+                                    <li><a href="#sub-wallpaper" data-toggle="tab" data-qp-subtab="1">Wallpaper</a></li>
+                                    <li><a href="#sub-buttons" data-toggle="tab" data-qp-subtab="1">Button Layout</a></li>
+                                    <li><a href="#sub-contacts" data-toggle="tab" data-qp-subtab="1" onclick="loadContacts()">Contacts</a></li>
                                 </ul>
                                 <div class="tab-content" style="padding-top:15px;">
 
@@ -247,11 +247,35 @@ if (is_readable($module_xml_path)) {
                                             <div class="col-sm-6">
                                                 <div class="form-group">
                                                     <label>Display Mode</label>
-                                                    <select id="wp_mode_sel" class="form-control" onchange="$('#wallpaper_mode').val(this.value); renderPreview();">
+                                                    <select id="wp_mode_sel" class="form-control" onchange="$('#wallpaper_mode').val(this.value); refreshWallpaperPreview();">
                                                         <option value="crop">Crop to Fill</option>
                                                         <option value="fit">Fit (Letterbox)</option>
                                                     </select>
                                                 </div>
+                                            </div>
+                                        </div>
+                                        <div class="panel panel-default">
+                                            <div class="panel-heading"><strong>Background vs Keys</strong></div>
+                                            <div class="panel-body">
+                                                <p class="text-muted" style="margin-top:0;">When the handset shows on-screen hotkeys (e.g. VVX1500 right column), keep the logo in the clear area instead of under the keys.</p>
+                                                <div class="form-group">
+                                                    <label>Wallpaper layout</label>
+                                                    <select id="wp_layout_sel" name="custom_options[wallpaper_layout]" class="form-control" onchange="onWallpaperLayoutChange()">
+                                                        <option value="around_keys">Clear of keys (recommended)</option>
+                                                        <option value="full">Full bleed (edge to edge)</option>
+                                                        <option value="custom">Custom margins…</option>
+                                                    </select>
+                                                </div>
+                                                <div id="wpInsetCustom" style="display:none;">
+                                                    <div class="row">
+                                                        <div class="col-xs-6 col-sm-3"><label>Left</label><input type="number" min="0" max="400" class="form-control" id="wp_inset_left" name="custom_options[wallpaper_inset_left]" value="16" onchange="refreshWallpaperPreview()"></div>
+                                                        <div class="col-xs-6 col-sm-3"><label>Top</label><input type="number" min="0" max="400" class="form-control" id="wp_inset_top" name="custom_options[wallpaper_inset_top]" value="40" onchange="refreshWallpaperPreview()"></div>
+                                                        <div class="col-xs-6 col-sm-3"><label>Right</label><input type="number" min="0" max="400" class="form-control" id="wp_inset_right" name="custom_options[wallpaper_inset_right]" value="168" onchange="refreshWallpaperPreview()"></div>
+                                                        <div class="col-xs-6 col-sm-3"><label>Bottom</label><input type="number" min="0" max="400" class="form-control" id="wp_inset_bottom" name="custom_options[wallpaper_inset_bottom]" value="56" onchange="refreshWallpaperPreview()"></div>
+                                                    </div>
+                                                    <p class="help-block">Pixels of screen reserved for UI chrome. Image is fitted into the remaining rectangle.</p>
+                                                </div>
+                                                <p class="help-block" id="wpInsetHint"></p>
                                             </div>
                                         </div>
                                         <div class="panel panel-primary">
@@ -332,7 +356,7 @@ if (is_readable($module_xml_path)) {
                         </div>
                     </div>
                 </div>
-            </form>
+            </div>
         </div>
 
         <!-- ==================== TAB 3: FILE MANAGER ==================== -->
@@ -343,7 +367,7 @@ if (is_readable($module_xml_path)) {
                         <div class="panel-heading"><strong><i class="fa fa-image"></i> Wallpapers</strong></div>
                         <div class="panel-body">
                             <input type="file" id="assetUpload" class="form-control" accept="image/*">
-                            <br><button class="btn btn-primary btn-sm" onclick="uploadAsset()"><i class="fa fa-upload"></i> Upload</button>
+                            <br><button type="button" class="btn btn-primary btn-sm" onclick="uploadAsset()"><i class="fa fa-upload"></i> Upload</button>
                         </div>
                     </div>
                     <div id="assetGrid" class="row"></div>
@@ -353,7 +377,7 @@ if (is_readable($module_xml_path)) {
                         <div class="panel-heading"><strong><i class="fa fa-music"></i> Ringtones</strong></div>
                         <div class="panel-body">
                             <input type="file" id="ringtoneUpload" class="form-control" accept=".wav">
-                            <br><button class="btn btn-primary btn-sm" onclick="uploadRingtone()"><i class="fa fa-upload"></i> Upload</button>
+                            <br><button type="button" class="btn btn-primary btn-sm" onclick="uploadRingtone()"><i class="fa fa-upload"></i> Upload</button>
                         </div>
                     </div>
                     <div id="ringtoneList"></div>
@@ -363,7 +387,7 @@ if (is_readable($module_xml_path)) {
                         <div class="panel-heading"><strong><i class="fa fa-microchip"></i> Firmware</strong></div>
                         <div class="panel-body">
                             <input type="file" id="firmwareUpload" class="form-control">
-                            <br><button class="btn btn-primary btn-sm" onclick="uploadFirmware()"><i class="fa fa-upload"></i> Upload</button>
+                            <br><button type="button" class="btn btn-primary btn-sm" onclick="uploadFirmware()"><i class="fa fa-upload"></i> Upload</button>
                         </div>
                     </div>
                     <div id="firmwareList"></div>
@@ -376,24 +400,58 @@ if (is_readable($module_xml_path)) {
             <div class="row">
                 <div class="col-md-6">
                     <div class="panel panel-default">
-                        <div class="panel-heading"><strong>Import Template</strong></div>
+                        <div class="panel-heading">
+                            <strong id="templateEditorTitle"><i class="fa fa-file-code-o"></i> Template Editor</strong>
+                            <span id="templateEditorBadge" class="label label-default" style="margin-left:8px; display:none;">new</span>
+                        </div>
                         <div class="panel-body">
-                            <textarea id="driverInput" class="form-control" rows="10" placeholder="Paste Mustache template with META block..."></textarea>
+                            <p class="text-muted" style="margin-top:0;">
+                                Edit Mustache templates used by Device Editor. Click <strong>Edit</strong> on a template at right to load it here, or start a new one.
+                            </p>
+                            <div class="form-group">
+                                <label>Filename <small class="text-muted">(saved under templates/)</small></label>
+                                <input type="text" id="templateFilename" class="form-control" placeholder="e.g. polycom_vvx.xml.mustache" autocomplete="off">
+                            </div>
+                            <textarea id="driverInput" class="form-control" rows="16" placeholder="Mustache template with {{! META: {...} }} block..." style="font-family:monospace; font-size:12px;"></textarea>
                             <br>
-                            <button class="btn btn-primary" onclick="importDriver()"><i class="fa fa-download"></i> Import</button>
-                            <button class="btn btn-default" onclick="showExample()">Show Example</button>
+                            <div class="btn-toolbar">
+                                <div class="btn-group">
+                                    <button type="button" class="btn btn-success" onclick="saveTemplate()"><i class="fa fa-save"></i> Save Template</button>
+                                    <button type="button" class="btn btn-primary" onclick="saveTemplateAsNew()"><i class="fa fa-plus"></i> Save as New</button>
+                                </div>
+                                <div class="btn-group">
+                                    <button type="button" class="btn btn-default" onclick="newTemplateEditor()"><i class="fa fa-file-o"></i> New</button>
+                                    <button type="button" class="btn btn-default" onclick="showExample()"><i class="fa fa-lightbulb-o"></i> Mini Example</button>
+                                </div>
+                            </div>
                             <hr>
-                            <input type="file" id="templateFileUpload" accept=".mustache,.cfg,.xml">
-                            <button class="btn btn-default btn-sm" onclick="uploadTemplateFile()"><i class="fa fa-upload"></i> Upload File</button>
+                            <label>Or upload a file</label>
+                            <div class="input-group">
+                                <input type="file" id="templateFileUpload" class="form-control" accept=".mustache,.cfg,.xml,.txt">
+                                <span class="input-group-btn">
+                                    <button type="button" class="btn btn-default" onclick="uploadTemplateFile()"><i class="fa fa-upload"></i> Load File</button>
+                                </span>
+                            </div>
+                            <div id="importFeedback" style="margin-top:12px;"></div>
                         </div>
                     </div>
                 </div>
                 <div class="col-md-6">
-                    <div id="importFeedback"></div>
-                    <table class="table table-striped">
-                        <thead><tr><th>Template</th><th>Manufacturer</th><th>Models</th><th>Actions</th></tr></thead>
-                        <tbody id="templatesList"></tbody>
-                    </table>
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <strong><i class="fa fa-list"></i> Installed Templates</strong>
+                            <button type="button" class="btn btn-xs btn-default pull-right" onclick="loadTemplateList()"><i class="fa fa-refresh"></i></button>
+                        </div>
+                        <div class="panel-body" style="padding:0;">
+                            <table class="table table-striped" style="margin:0;">
+                                <thead><tr><th>Template</th><th>Manufacturer</th><th>Models</th><th style="width:120px;">Actions</th></tr></thead>
+                                <tbody id="templatesList"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <p class="help-block">
+                        These drive the Model dropdown in Device Editor. After saving, hard-refresh if a device is already open so it picks up META/settings changes.
+                    </p>
                 </div>
             </div>
         </div>
@@ -406,12 +464,31 @@ if (is_readable($module_xml_path)) {
                     <div class="panel panel-primary">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-server"></i> PBX Controls</h3></div>
                         <div class="panel-body">
-                            <button class="btn btn-success" onclick="reloadPBX()"><i class="fa fa-refresh"></i> Reload Config</button>
+                            <button type="button" class="btn btn-success" onclick="reloadPBX()"><i class="fa fa-refresh"></i> Reload Config</button>
                             <span class="text-muted">Apply changes without interrupting calls</span>
                             <br><br>
-                            <button class="btn btn-warning" onclick="restartPBX()"><i class="fa fa-power-off"></i> Restart PBX</button>
+                            <button type="button" class="btn btn-warning" onclick="restartPBX()"><i class="fa fa-power-off"></i> Restart PBX</button>
                             <span class="text-danger"><i class="fa fa-exclamation-triangle"></i> Interrupts active calls</span>
                             <div id="pbxStatus" style="margin-top:15px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Handset resync -->
+                    <div class="panel panel-warning">
+                        <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-bolt"></i> Handset Provisioning</h3></div>
+                        <div class="panel-body">
+                            <p class="text-muted" style="margin-top:0;">
+                                Push SIP <code>check-sync</code> to every Quick-Provisioner handset so they re-fetch config. Phones must be registered. Use <strong>force reboot</strong> if a phone ignores a normal resync.
+                            </p>
+                            <div class="checkbox">
+                                <label>
+                                    <input type="checkbox" id="resyncForceReboot"> Force reboot (<code>check-sync;reboot=true</code>)
+                                </label>
+                            </div>
+                            <button type="button" class="btn btn-warning" id="resyncAllBtn" onclick="resyncAllHandsets()">
+                                <i class="fa fa-bolt"></i> Resync All Handsets
+                            </button>
+                            <div id="resyncAllStatus" style="margin-top:12px;"></div>
                         </div>
                     </div>
 
@@ -419,10 +496,10 @@ if (is_readable($module_xml_path)) {
                     <div class="panel panel-default">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-globe"></i> Global SIP Server</h3></div>
                         <div class="panel-body">
-                            <p class="text-muted">Hostname or IP written into handset configs as the SIP registrar. Overrides auto-detected <code>SERVER_ADDR</code>. Per-device Settings still win if set.</p>
+                            <p class="text-muted">Hostname or IP written into handset configs as the SIP registrar <em>and</em> as the public host in provisioning / wallpaper / directory URLs (so remote phones can call home via public DNS). You can paste a full URL — <code>http://</code> is stripped automatically. Per-device Settings still win if set.</p>
                             <div class="form-group">
-                                <label>SIP Server Host</label>
-                                <input type="text" id="globalSipHost" class="form-control" placeholder="e.g. 192.168.13.241 or pbx.example.com">
+                                <label>SIP / Public Host</label>
+                                <input type="text" id="globalSipHost" class="form-control" placeholder="e.g. pbx.example.com or http://pbx.example.com">
                             </div>
                             <div class="form-group">
                                 <label>SIP Port (optional)</label>
@@ -437,7 +514,7 @@ if (is_readable($module_xml_path)) {
                     <div class="panel panel-info">
                         <div class="panel-heading"><h3 class="panel-title"><i class="fa fa-cloud-download"></i> Module Updates</h3></div>
                         <div class="panel-body">
-                            <p><strong>Version:</strong> <span id="currentVersion">0.1.5</span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
+                            <p><strong>Version:</strong> <span id="currentVersion"><?= htmlspecialchars($module_version, ENT_QUOTES, 'UTF-8') ?></span> &nbsp; <strong>Commit:</strong> <span id="currentCommit">...</span></p>
                             <button class="btn btn-primary" onclick="checkForUpdates()" id="checkUpdatesBtn"><i class="fa fa-search"></i> Check for Updates</button>
                             <div id="updateStatus" style="margin-top:15px; display:none;">
                                 <div id="updateMsg"></div>
@@ -594,6 +671,9 @@ var mediaEndpoint = '/admin/modules/quickprovisioner/media.php';
 var csrf = '<?= $csrf_token ?>';
 var freepbxExtensions = <?= json_encode($extensions, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS) ?>;
 var keyLabelCustomised = false;
+var profileLoadSeq = 0; // ignore stale loadProfile responses
+var modelDropdownReady = false;
+var editingTemplateFile = ''; // basename currently open in Templates tab
 
 function parseLayoutTarget() {
     if (layoutTarget === 'phone') return { role: 'line', module: 0 };
@@ -658,13 +738,16 @@ function fmtSize(b) { if (b < 1024) return b + ' B'; if (b < 1048576) return (b/
 // ===================== DEVICES =====================
 function loadDevices() {
     ajax('list_devices_with_secrets', {}, function(r) {
-        if (!r.status) { $('#deviceListBody').html('<tr><td colspan="5" class="text-danger">Error: ' + esc(r.message||'') + '</td></tr>'); return; }
+        if (!r.status) { $('#deviceListBody').html('<tr><td colspan="6" class="text-danger">Error: ' + esc(r.message||'') + '</td></tr>'); return; }
         var html = '';
         r.devices.forEach(function(d) {
             var sec = d.secret ? esc(d.secret) : '<span class="text-muted">N/A</span>';
             if (d.secret_source === 'Custom') sec += ' <span class="label label-info">Custom</span>';
             else if (d.secret_source === 'FreePBX') sec += ' <span class="label label-success">FreePBX</span>';
-            html += '<tr><td>' + esc(d.mac) + '</td><td>' + esc(d.extension) + '</td><td>' + sec + '</td><td>' + esc(d.model) + '</td>';
+            var name = d.display_name || freepbxExtName(d.extension) || '';
+            html += '<tr><td>' + esc(d.mac) + '</td><td>' + esc(d.extension) + '</td>';
+            html += '<td>' + (name ? esc(name) : '<span class="text-muted">—</span>') + '</td>';
+            html += '<td>' + sec + '</td><td>' + esc(d.model) + '</td>';
             html += '<td style="white-space:nowrap;">';
             html += '<button class="btn btn-xs btn-default" onclick="editDevice(' + d.id + ')" title="Edit"><i class="fa fa-pencil"></i></button> ';
             html += '<button class="btn btn-xs btn-info" onclick="rebuildDevice(' + d.id + ', false)" title="Rebuild config"><i class="fa fa-refresh"></i></button> ';
@@ -672,7 +755,7 @@ function loadDevices() {
             html += '<button class="btn btn-xs btn-danger" onclick="deleteDevice(' + d.id + ')" title="Delete"><i class="fa fa-trash"></i></button>';
             html += '</td></tr>';
         });
-        $('#deviceListBody').html(html || '<tr><td colspan="5" class="text-muted">No devices yet. Click Add New to get started.</td></tr>');
+        $('#deviceListBody').html(html || '<tr><td colspan="6" class="text-muted">No devices yet. Click Add New to get started.</td></tr>');
     });
 }
 
@@ -690,14 +773,40 @@ function rebuildDevice(id, notify) {
 }
 
 function newDevice() {
-    $('#deviceForm')[0].reset();
-    $('#deviceId').val(''); $('#extension').val(''); $('#extension_custom').val('');
-    $('#ext_sel_wrap').show(); $('#ext_cust_wrap').hide();
-    $('#sip_secret_preview').val(''); $('#sip_secret_custom').val(''); $('#custom_sip_secret').val('');
-    $('#secret_prev_wrap').show(); $('#secret_cust_wrap').hide();
-    currentKeys = []; currentContacts = []; currentDeviceId = null; smartDialShortcuts = {};
-    clearWallpaper(); renderPreview();
+    clearDeviceEditor();
     $('a[href="#tab-editor"]').tab('show');
+}
+
+/** Wipe editor fields without relying on form.reset() (deviceForm is a div). */
+function clearDeviceEditor() {
+    currentKeys = [];
+    currentContacts = [];
+    currentDeviceId = null;
+    smartDialShortcuts = {};
+    keyLabelCustomised = false;
+    $('#deviceId').val('');
+    $('#extension').val('');
+    $('#extension_select').val('');
+    $('#extension_custom').val('');
+    $('#ext_sel_wrap').show();
+    $('#ext_cust_wrap').hide();
+    $('#sip_secret_preview').val('');
+    $('#sip_secret_custom').val('');
+    $('#custom_sip_secret').val('');
+    $('#secret_prev_wrap').show();
+    $('#secret_cust_wrap').hide();
+    $('#model').val('');
+    $('#mac').val('');
+    $('#prov_username').val('');
+    $('#prov_password').val('');
+    $('#custom_template_override').val('');
+    $('#wallpaper_mode').val('crop');
+    $('#wp_mode_sel').val('crop');
+    $('#wp_layout_sel').val('around_keys');
+    $('#deviceOptions').html('<p class="text-muted">Select a model to view settings.</p>');
+    $('#rightColHeader').text('Select a Model to Load Template');
+    clearWallpaper();
+    renderPreview();
 }
 
 function editDevice(id) {
@@ -705,42 +814,75 @@ function editDevice(id) {
     ajax('get_device', {id: id}, function(r) {
         if (!r.status || !r.data) return;
         var d = r.data;
-        $('#deviceId').val(d.id);
-        $('#mac').val(d.mac);
-
-        var found = false;
-        $('#extension_select option').each(function() { if ($(this).val() === d.extension) { found = true; return false; } });
-        if (found) {
-            $('#extension_select').val(d.extension); $('#extension').val(d.extension);
-            $('#ext_sel_wrap').show(); $('#ext_cust_wrap').hide();
-        } else {
-            $('#extension_custom').val(d.extension); $('#extension').val(d.extension);
-            $('#ext_sel_wrap').hide(); $('#ext_cust_wrap').show();
-        }
-
-        $('#custom_sip_secret').val(d.custom_sip_secret || '');
-        loadSipSecret();
-        $('#model').val(d.model);
-        loadProfile(function() {
-            // After profile loads, populate custom options
-            var co = {};
-            try { co = JSON.parse(d.custom_options_json) || {}; } catch(e) {}
-            for (var k in co) { $('[name="custom_options[' + k + ']"]').val(co[k]); }
-        });
-        $('#wallpaper').val(d.wallpaper);
-        updateWpPreview(d.wallpaper);
-        $('#wallpaper_mode').val(d.wallpaper_mode); $('#wp_mode_sel').val(d.wallpaper_mode);
-        $('#prov_username').val(d.prov_username || ''); $('#prov_password').val(d.prov_password || '');
-        $('#custom_template_override').val(d.custom_template_override || '');
-        try { currentKeys = JSON.parse(d.keys_json) || []; } catch(e) { currentKeys = []; }
-        try { currentContacts = JSON.parse(d.contacts_json) || []; } catch(e) { currentContacts = []; }
-        try {
-            var opts = JSON.parse(d.custom_options_json) || {};
-            if (opts.smart_dial_shortcuts) smartDialShortcuts = JSON.parse(opts.smart_dial_shortcuts);
-        } catch(e) { smartDialShortcuts = {}; }
-        renderPreview();
+        applyDeviceToEditor(d);
     });
     $('a[href="#tab-editor"]').tab('show');
+}
+
+/** Populate the editor from a device row (edit or post-save refresh). */
+function applyDeviceToEditor(d) {
+    if (!d) return;
+    currentDeviceId = d.id || currentDeviceId;
+    $('#deviceId').val(d.id || '');
+    $('#mac').val(d.mac || '');
+
+    var found = false;
+    $('#extension_select option').each(function() {
+        if ($(this).val() === d.extension) { found = true; return false; }
+    });
+    if (found) {
+        $('#extension_select').val(d.extension);
+        $('#extension').val(d.extension);
+        $('#ext_sel_wrap').show();
+        $('#ext_cust_wrap').hide();
+    } else {
+        $('#extension_custom').val(d.extension || '');
+        $('#extension').val(d.extension || '');
+        $('#ext_sel_wrap').hide();
+        $('#ext_cust_wrap').show();
+    }
+
+    $('#custom_sip_secret').val(d.custom_sip_secret || '');
+    loadSipSecret();
+
+    var model = d.model || '';
+    $('#model').val(model);
+    try { currentKeys = JSON.parse(d.keys_json) || []; } catch (e) { currentKeys = []; }
+    try { currentContacts = JSON.parse(d.contacts_json) || []; } catch (e) { currentContacts = []; }
+    try {
+        var opts = JSON.parse(d.custom_options_json) || {};
+        if (opts.smart_dial_shortcuts) smartDialShortcuts = JSON.parse(opts.smart_dial_shortcuts);
+        else smartDialShortcuts = {};
+    } catch (e) { smartDialShortcuts = {}; }
+
+    $('#wallpaper').val(d.wallpaper || '');
+    updateWpPreview(d.wallpaper);
+    $('#wallpaper_mode').val(d.wallpaper_mode || 'crop');
+    $('#wp_mode_sel').val(d.wallpaper_mode || 'crop');
+    $('#prov_username').val(d.prov_username || '');
+    $('#prov_password').val(d.prov_password || '');
+    $('#custom_template_override').val(d.custom_template_override || '');
+
+    loadProfile(function() {
+        // Re-assert identity fields after async profile rebuild (prevents wipe races)
+        $('#deviceId').val(d.id || '');
+        $('#mac').val(d.mac || '');
+        $('#extension').val(d.extension || '');
+        if (found) $('#extension_select').val(d.extension);
+        else $('#extension_custom').val(d.extension || '');
+        $('#model').val(model);
+
+        var co = {};
+        try { co = JSON.parse(d.custom_options_json) || {}; } catch (e) {}
+        for (var k in co) {
+            $('[name="custom_options[' + k + ']"]').val(co[k]);
+        }
+        if (co.wallpaper_layout) $('#wp_layout_sel').val(co.wallpaper_layout);
+        else $('#wp_layout_sel').val('around_keys');
+        onWallpaperLayoutChange();
+        if (d.wallpaper) updateWpPreview(d.wallpaper);
+        renderPreview();
+    });
 }
 
 function deleteDevice(id) {
@@ -756,17 +898,26 @@ function loadTemplateList() {
         if (!r.status) return;
         var html = '';
         r.list.forEach(function(t) {
-            html += '<tr><td>' + esc(t.display_name) + '</td><td>' + esc(t.manufacturer) + '</td>';
-            html += '<td>' + esc((t.supported_models||[]).join(', ')) + '</td>';
-            html += '<td><button class="btn btn-xs btn-danger" onclick="deleteTemplate(\'' + esc(t.model).replace(/'/g,"\\'") + '\')"><i class="fa fa-trash"></i></button></td></tr>';
+            var key = t.filename || (t.model + '.mustache');
+            var keyJs = String(key).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            var active = (editingTemplateFile === key) ? ' style="background:#eef8ee;"' : '';
+            html += '<tr' + active + '>';
+            html += '<td><strong>' + esc(t.display_name) + '</strong><br><small class="text-muted">' + esc(key) + '</small></td>';
+            html += '<td>' + esc(t.manufacturer) + '</td>';
+            html += '<td><small>' + esc((t.supported_models||[]).join(', ')) + '</small></td>';
+            html += '<td style="white-space:nowrap;">';
+            html += '<button type="button" class="btn btn-xs btn-primary" onclick="editTemplateFile(\'' + keyJs + '\')" title="Load into editor"><i class="fa fa-pencil"></i> Edit</button> ';
+            html += '<button type="button" class="btn btn-xs btn-danger" onclick="deleteTemplate(\'' + keyJs + '\')" title="Delete"><i class="fa fa-trash"></i></button>';
+            html += '</td></tr>';
         });
-        $('#templatesList').html(html);
+        $('#templatesList').html(html || '<tr><td colspan="4" class="text-muted">No templates installed.</td></tr>');
     });
 }
 
 function loadModelDropdown() {
     ajax('list_drivers', {}, function(r) {
         if (!r.status) return;
+        var prev = $('#model').val();
         // Group by manufacturer for optgroups
         var groups = {};
         r.list.forEach(function(t) {
@@ -810,13 +961,25 @@ function loadModelDropdown() {
             html += '</optgroup>';
         });
         $('#model').html(html);
+        // Preserve selection — rebuilding options used to wipe model mid-edit
+        if (prev) $('#model').val(prev);
+        modelDropdownReady = true;
     });
 }
 
 function loadProfile(afterCb) {
     var model = $('#model').val();
     if (!model) return;
+    var seq = ++profileLoadSeq;
+    // Snapshot identity so a late callback cannot leave the editor blank
+    var snap = {
+        deviceId: $('#deviceId').val(),
+        extension: $('#extension').val(),
+        mac: $('#mac').val(),
+        model: model
+    };
     ajax('get_driver', {model: model}, function(r) {
+        if (seq !== profileLoadSeq) return; // stale response
         if (!r.status) { alert('Error: ' + r.message); return; }
         profiles[model] = r.meta;
         templateSources[model] = r.source || '';
@@ -828,12 +991,30 @@ function loadProfile(afterCb) {
             profiles[model].visual_editor.total_pages = mp;
         }
         // Per-model key count (e.g. VVX1500=6) — trim shared-family key maps
+        // Clone visual_editor before mutating so cached META is not permanently trimmed
+        if (profiles[model].visual_editor && !profiles[model]._ve_base) {
+            profiles[model]._ve_base = JSON.parse(JSON.stringify(profiles[model].visual_editor));
+        }
+        if (profiles[model]._ve_base) {
+            profiles[model].visual_editor = JSON.parse(JSON.stringify(profiles[model]._ve_base));
+        }
         applyModelKeyLimit(model, profiles[model]);
         var dn = profiles[model].display_name || model;
         $('#rightColHeader').html('<i class="fa fa-check-circle text-success"></i> ' + esc(dn) + ' Template Loaded');
         loadDeviceOptions();
         updatePageSelect();
         updateScreenDims();
+        // Restore identity if something else cleared it during the ajax round-trip
+        if (snap.deviceId && !$('#deviceId').val()) $('#deviceId').val(snap.deviceId);
+        if (snap.extension && !$('#extension').val()) {
+            $('#extension').val(snap.extension);
+            if ($('#extension_select option[value="' + String(snap.extension).replace(/"/g, '\\"') + '"]').length) {
+                $('#extension_select').val(snap.extension);
+            }
+        }
+        if (snap.mac && !$('#mac').val()) $('#mac').val(snap.mac);
+        if (snap.model && $('#model').val() !== snap.model) $('#model').val(snap.model);
+        onWallpaperLayoutChange();
         renderPreview();
         loadWpGallery();
         if (typeof afterCb === 'function') afterCb();
@@ -895,7 +1076,7 @@ function loadDeviceOptions() {
     }
     $('#settingsToolbar').removeAttr('hidden');
     if (p.sample_preset && p.sample_preset.label) {
-        $('#samplePresetNote').text('Sample preset: ' + p.sample_preset.label + (p.sample_preset.notes ? ' — ' + p.sample_preset.notes : '')).show();
+        $('#samplePresetNote').text('Sample preset available: ' + p.sample_preset.label + (p.sample_preset.notes ? ' — ' + p.sample_preset.notes : '') + ' Use “Load Sample Buttons” above.').show();
     } else {
         $('#samplePresetNote').hide();
     }
@@ -916,7 +1097,7 @@ function loadDeviceOptions() {
 
     var boolVars = {
         auto_answer:1, dnd_enabled:1, call_waiting:1, web_ui_enabled:1,
-        cdp_lldp_enabled:1, dst_enable:1
+        cdp_lldp_enabled:1, dst_enable:1, kid_friendly_mode:1
     };
     var selectVars = {
         transport: ['UDP','TCP','TLS','DNS-SRV'],
@@ -1163,9 +1344,18 @@ function saveCustomSecret() {
 
 function autoFillBtn1(ext) {
     if (!ext) return;
+    var name = '';
+    var $opt = $('#extension_select option[value="' + String(ext).replace(/"/g, '\\"') + '"]');
+    if ($opt.length) name = $.trim($opt.attr('data-name') || '');
+    var lineLabel = name || ext;
     var b1 = currentKeys.find(function(k) { return k.index === 1; });
-    if (!b1) { currentKeys.push({index:1, type:'line', label:ext, value:ext}); }
-    else if (!b1.type) { b1.type='line'; b1.label=ext; b1.value=ext; }
+    if (!b1) { currentKeys.push({index:1, type:'line', label:lineLabel, value:ext}); }
+    else if (!b1.type) { b1.type='line'; b1.label=lineLabel; b1.value=ext; }
+    else if (b1.type === 'line' && (!b1.label || b1.label === ext) && name) {
+        // Refresh placeholder "102" labels with FreePBX name when available
+        b1.label = name;
+        b1.value = ext;
+    }
     renderPreview();
 }
 
@@ -1221,12 +1411,18 @@ function genProvUser() {
 }
 
 // ===================== FORM SUBMIT =====================
-$('#deviceForm').submit(function(e) {
-    e.preventDefault();
+function saveDevice() {
+    // Keep extension hidden in sync with visible picker
+    if (!$('#extension').val()) {
+        var ext = ($('#extension_select').val() || $('#extension_custom').val() || '').trim();
+        if (ext) $('#extension').val(ext);
+    }
     var ext = $('#extension').val();
     if (!ext) { alert('Select or enter an extension'); return; }
+    if (!$('#mac').val()) { alert('Enter a MAC address'); return; }
+    if (!$('#model').val()) { alert('Select a model'); return; }
 
-    var fd = $(this).serializeArray();
+    var fd = $('#deviceForm').find('input,select,textarea').serializeArray();
     if (Object.keys(smartDialShortcuts).length > 0)
         fd.push({name:'custom_options[smart_dial_shortcuts]', value:JSON.stringify(smartDialShortcuts)});
 
@@ -1235,9 +1431,31 @@ $('#deviceForm').submit(function(e) {
         keys_json: JSON.stringify(currentKeys),
         contacts_json: JSON.stringify(currentContacts)
     }, function(r) {
-        if (r.status) { alert('Saved!'); loadDevices(); newDevice(); }
-        else alert('Error: ' + r.message);
+        if (!r.status) { alert('Error: ' + r.message); return; }
+        // Stay on the same handset — clearing after save was wiping in-progress edits
+        if (r.id) {
+            $('#deviceId').val(r.id);
+            currentDeviceId = r.id;
+        }
+        loadDevices();
+        alert('Saved!');
     });
+}
+
+// Block accidental Enter-key submits if FreePBX wraps this page in a parent <form>
+$(document).on('keydown', '#deviceForm input, #deviceForm select, #deviceForm textarea', function(e) {
+    if (e.key === 'Enter' || e.keyCode === 13) {
+        if (this.tagName === 'TEXTAREA') return;
+        e.preventDefault();
+        return false;
+    }
+});
+
+// Keep nested editor tabs from fighting FreePBX / parent Bootstrap tabs
+$(document).on('click', '#editorSubTabs a[data-qp-subtab]', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    $(this).tab('show');
 });
 
 // ===================== CONFIG PREVIEW =====================
@@ -1823,6 +2041,78 @@ $(document).on('click', '#keyExtRefresh', function() {
 $(function() { populateKeyExtSelect(); });
 
 // ===================== WALLPAPER =====================
+function getModelWallpaperSpec() {
+    var model = $('#model').val(), p = profiles[model];
+    if (p && p.wallpaper_specs) {
+        return p.wallpaper_specs[model] || p.wallpaper_specs[String(model).toUpperCase()] || null;
+    }
+    return null;
+}
+
+function getWallpaperInsets() {
+    var layout = $('#wp_layout_sel').val() || 'around_keys';
+    if (layout === 'full') {
+        return { left: 0, top: 0, right: 0, bottom: 0, layout: layout };
+    }
+    var sp = getModelWallpaperSpec() || {};
+    var defL = parseInt(sp.inset_left, 10) || 0;
+    var defT = parseInt(sp.inset_top, 10) || 0;
+    var defR = parseInt(sp.inset_right, 10) || 0;
+    var defB = parseInt(sp.inset_bottom, 10) || 0;
+    // Models with on-screen keys but no META insets: sensible VVX1500-like defaults for landscape
+    if (layout === 'around_keys' && (defL + defT + defR + defB) === 0) {
+        var model = ($('#model').val() || '').toUpperCase();
+        if (model.indexOf('VVX1500') !== -1 || model.indexOf('VVX 1500') !== -1) {
+            defL = 16; defT = 40; defR = 168; defB = 56;
+        }
+    }
+    if (layout === 'custom') {
+        return {
+            left: Math.max(0, parseInt($('#wp_inset_left').val(), 10) || 0),
+            top: Math.max(0, parseInt($('#wp_inset_top').val(), 10) || 0),
+            right: Math.max(0, parseInt($('#wp_inset_right').val(), 10) || 0),
+            bottom: Math.max(0, parseInt($('#wp_inset_bottom').val(), 10) || 0),
+            layout: layout
+        };
+    }
+    return { left: defL, top: defT, right: defR, bottom: defB, layout: layout };
+}
+
+function onWallpaperLayoutChange() {
+    var layout = $('#wp_layout_sel').val() || 'around_keys';
+    if (layout === 'custom') {
+        var sp = getModelWallpaperSpec() || {};
+        if (!$('#wp_inset_left').val()) $('#wp_inset_left').val(sp.inset_left || 16);
+        if (!$('#wp_inset_top').val()) $('#wp_inset_top').val(sp.inset_top || 40);
+        if (!$('#wp_inset_right').val()) $('#wp_inset_right').val(sp.inset_right || 168);
+        if (!$('#wp_inset_bottom').val()) $('#wp_inset_bottom').val(sp.inset_bottom || 56);
+        $('#wpInsetCustom').show();
+    } else {
+        $('#wpInsetCustom').hide();
+    }
+    updateWallpaperInsetHint();
+    refreshWallpaperPreview();
+}
+
+function updateWallpaperInsetHint() {
+    var ins = getWallpaperInsets();
+    var dims = getWallpaperDimensions();
+    var cw = Math.max(1, dims.width - ins.left - ins.right);
+    var ch = Math.max(1, dims.height - ins.top - ins.bottom);
+    if (ins.layout === 'full' || (ins.left + ins.top + ins.right + ins.bottom) === 0) {
+        $('#wpInsetHint').text('Image fills the full ' + dims.width + '×' + dims.height + ' screen.');
+    } else {
+        $('#wpInsetHint').text('Image fits in a ' + cw + '×' + ch + ' content area (margins L' + ins.left + ' T' + ins.top + ' R' + ins.right + ' B' + ins.bottom + ').');
+    }
+}
+
+function refreshWallpaperPreview() {
+    updateWallpaperInsetHint();
+    var fn = $('#wallpaper').val();
+    if (fn) updateWpPreview(fn);
+    renderPreview();
+}
+
 function updateScreenDims() {
     var model = $('#model').val(), p = profiles[model];
     var w=800, h=480;
@@ -1832,6 +2122,7 @@ function updateScreenDims() {
         if (sp && sp.height) h = sp.height;
     }
     $('#screenW').text(w); $('#screenH').text(h);
+    updateWallpaperInsetHint();
 }
 
 function getWallpaperDimensions() {
@@ -1851,10 +2142,17 @@ function buildWallpaperPreviewUrl(fn, mode) {
     if (fn.startsWith('http')) return fn;
     var dims = getWallpaperDimensions();
     var wpMode = mode || $('#wallpaper_mode').val() || 'crop';
+    var ins = getWallpaperInsets();
+    // When margins are set, force fit-into-content so logos stay clear of keys
+    if ((ins.left + ins.top + ins.right + ins.bottom) > 0) wpMode = 'fit';
     return mediaEndpoint + '?file=' + encodeURIComponent(fn)
         + '&w=' + encodeURIComponent(dims.width)
         + '&h=' + encodeURIComponent(dims.height)
         + '&mode=' + encodeURIComponent(wpMode)
+        + '&inset_left=' + encodeURIComponent(ins.left)
+        + '&inset_top=' + encodeURIComponent(ins.top)
+        + '&inset_right=' + encodeURIComponent(ins.right)
+        + '&inset_bottom=' + encodeURIComponent(ins.bottom)
         + '&preview=1&t=' + Date.now();
 }
 
@@ -1868,6 +2166,11 @@ function uploadWallpaper() {
         var sp = p.wallpaper_specs[model];
         if (sp) { fd.append('resize_width', sp.width); fd.append('resize_height', sp.height); }
     }
+    var ins = getWallpaperInsets();
+    fd.append('inset_left', ins.left);
+    fd.append('inset_top', ins.top);
+    fd.append('inset_right', ins.right);
+    fd.append('inset_bottom', ins.bottom);
     $.ajax({url:'ajax.php?module=quickprovisioner&command=upload_file', type:'POST', data:fd, contentType:false, processData:false, success:function(r) {
         if (r.status) { loadWpGallery(); selWp(r.url); } else alert('Error: '+r.message);
     }});
@@ -2070,24 +2373,152 @@ function loadFirmware() {
 function deleteFirmware(fn) { if(!confirm('Delete '+fn+'?')) return; ajax('delete_firmware', {filename:fn}, function(r) { if(r.status) loadFirmware(); else alert(r.message); }); }
 
 // ===================== TEMPLATES =====================
-function importDriver() {
-    var t = $('#driverInput').val().trim();
-    if (!t) { $('#importFeedback').html('<div class="alert alert-warning">Paste a template first.</div>'); return; }
-    ajax('import_driver', {template: t}, function(r) {
-        if (r.status) { $('#importFeedback').html('<div class="alert alert-success">Imported!</div>'); loadTemplateList(); loadModelDropdown(); $('#driverInput').val(''); }
-        else $('#importFeedback').html('<div class="alert alert-danger">'+esc(r.message)+'</div>');
+function setTemplateEditorMode(filename) {
+    editingTemplateFile = filename || '';
+    if (editingTemplateFile) {
+        $('#templateFilename').val(editingTemplateFile);
+        $('#templateEditorTitle').html('<i class="fa fa-pencil"></i> Editing template');
+        $('#templateEditorBadge').text('editing').removeClass('label-default label-success').addClass('label-warning').show();
+    } else {
+        $('#templateEditorTitle').html('<i class="fa fa-file-code-o"></i> Template Editor');
+        $('#templateEditorBadge').text('new').removeClass('label-warning label-success').addClass('label-default').show();
+    }
+}
+
+function newTemplateEditor(force) {
+    if (!force && $('#driverInput').val().trim() && !confirm('Clear the editor and start a new template?')) return;
+    $('#driverInput').val('');
+    $('#templateFilename').val('');
+    setTemplateEditorMode('');
+    $('#importFeedback').html('');
+    loadTemplateList();
+}
+
+function editTemplateFile(filename) {
+    filename = String(filename || '').replace(/^.*[\\\/]/, '');
+    if (!filename) return;
+    ajax('get_template', {filename: filename}, function(r) {
+        if (!r.status) {
+            $('#importFeedback').html('<div class="alert alert-danger">' + esc(r.message || 'Load failed') + '</div>');
+            return;
+        }
+        $('#driverInput').val(r.source || '');
+        setTemplateEditorMode(r.filename || filename);
+        $('#importFeedback').html('<div class="alert alert-info" style="margin:0;">Loaded <code>' + esc(r.filename || filename) + '</code> — edit then Save Template.</div>');
+        loadTemplateList();
+        $('a[href="#tab-templates"]').tab('show');
+        try { $('#driverInput')[0].scrollTop = 0; } catch (e) {}
     });
 }
+
+function normalizeTemplateFilename(name) {
+    name = String(name || '').trim().replace(/^.*[\\\/]/, '');
+    if (!name) return '';
+    if (!/\.mustache$/i.test(name)) name += '.mustache';
+    return name;
+}
+
+function saveTemplate() {
+    var t = $('#driverInput').val().trim();
+    if (!t) {
+        $('#importFeedback').html('<div class="alert alert-warning">Nothing to save — paste or load a template first.</div>');
+        return;
+    }
+    var filename = normalizeTemplateFilename($('#templateFilename').val() || editingTemplateFile);
+    if (!filename) {
+        $('#importFeedback').html('<div class="alert alert-warning">Enter a filename (e.g. polycom_vvx.xml.mustache).</div>');
+        $('#templateFilename').focus();
+        return;
+    }
+    if (editingTemplateFile && filename === editingTemplateFile) {
+        if (!confirm('Overwrite installed template "' + filename + '"?')) return;
+    }
+    ajax('import_driver', {template: t, filename: filename}, function(r) {
+        if (r.status) {
+            setTemplateEditorMode(r.filename || filename);
+            $('#importFeedback').html('<div class="alert alert-success">Saved <code>' + esc(r.filename || filename) + '</code></div>');
+            loadTemplateList();
+            loadModelDropdown();
+        } else {
+            $('#importFeedback').html('<div class="alert alert-danger">' + esc(r.message) + '</div>');
+        }
+    });
+}
+
+function saveTemplateAsNew() {
+    var suggested = normalizeTemplateFilename($('#templateFilename').val() || editingTemplateFile || 'custom_template.mustache');
+    if (/\.mustache$/i.test(suggested)) {
+        suggested = suggested.replace(/\.mustache$/i, '_copy.mustache');
+    }
+    var name = prompt('Save as new filename:', suggested);
+    if (!name) return;
+    $('#templateFilename').val(normalizeTemplateFilename(name));
+    setTemplateEditorMode(''); // treat as new until saved
+    saveTemplate();
+}
+
+/** @deprecated alias — Import button removed; Save Template replaces it */
+function importDriver() { saveTemplate(); }
+
 function uploadTemplateFile() {
     var f = document.getElementById('templateFileUpload');
     if (!f.files[0]) { $('#importFeedback').html('<div class="alert alert-warning">Select a file.</div>'); return; }
+    var name = f.files[0].name || '';
     var reader = new FileReader();
-    reader.onload = function(e) { $('#driverInput').val(e.target.result); importDriver(); };
+    reader.onload = function(e) {
+        $('#driverInput').val(e.target.result);
+        if (name) {
+            var fn = normalizeTemplateFilename(name);
+            $('#templateFilename').val(fn);
+            setTemplateEditorMode('');
+        }
+        $('#importFeedback').html('<div class="alert alert-info">File loaded into editor — review then Save Template.</div>');
+    };
     reader.readAsText(f.files[0]);
 }
-function deleteTemplate(model) { if(!confirm('Delete template?')) return; ajax('delete_driver', {model:model}, function(r) { if(r.status) { loadTemplateList(); loadModelDropdown(); } else alert(r.message); }); }
+
+function deleteTemplate(filenameOrModel) {
+    var key = String(filenameOrModel || '');
+    if (!confirm('Delete template "' + key + '"? Devices using it will fail to provision until replaced.')) return;
+    ajax('delete_driver', {model: key.replace(/\.mustache$/i, ''), filename: key}, function(r) {
+        if (r.status) {
+            if (editingTemplateFile === key || editingTemplateFile === normalizeTemplateFilename(key)) {
+                newTemplateEditor(true);
+            }
+            loadTemplateList();
+            loadModelDropdown();
+            $('#importFeedback').html('<div class="alert alert-success">Deleted.</div>');
+        } else alert(r.message);
+    });
+}
+
 function showExample() {
-    $('#driverInput').val('{{! META: {\n  "manufacturer": "Yealink",\n  "model_family": "T4x",\n  "display_name": "Yealink T4x Custom",\n  "config_format": "cfg",\n  "content_type": "text/plain",\n  "filename_pattern": "{mac}.cfg",\n  "supported_models": ["T48G"],\n  "max_line_keys": 29,\n  "type_mapping": {"line": 15, "blf": 16, "speed_dial": 13},\n  "categories": [\n    {"id": "sip", "label": "SIP & Registration", "icon": "📞", "order": 1}\n  ],\n  "variables": [\n    {"name": "sip_server", "category": "sip", "description": "SIP server address", "example": "pbx.example.com", "default": ""}\n  ]\n} }}\n#!version:1.0.0.1\n{{#lines}}\naccount.{{line_index}}.enable = 1\naccount.{{line_index}}.user_name = {{user_name}}\naccount.{{line_index}}.password = {{password}}\naccount.{{line_index}}.sip_server.1.address = {{sip_server}}\n{{/lines}}');
+    // Prefer loading a real installed template so "example" matches production format
+    ajax('list_drivers', {}, function(r) {
+        if (r.status && r.list && r.list.length) {
+            var pick = r.list.find(function(t) {
+                return /polycom/i.test(t.display_name || '') || /polycom/i.test(t.filename || '');
+            }) || r.list[0];
+            var names = r.list.map(function(t, i) {
+                return (i + 1) + '. ' + (t.display_name || t.model) + '  (' + (t.filename || t.model) + ')';
+            }).join('\n');
+            var choice = prompt(
+                'Load which installed template into the editor?\n\n' + names + '\n\nEnter number (or Cancel for mini stub):',
+                '1'
+            );
+            if (choice === null) return;
+            var idx = parseInt(choice, 10) - 1;
+            if (!isNaN(idx) && r.list[idx]) {
+                editTemplateFile(r.list[idx].filename || (r.list[idx].model + '.mustache'));
+                return;
+            }
+            // fall through to mini stub if invalid number
+        }
+        $('#driverInput').val('{{! META: {\n  "manufacturer": "Yealink",\n  "model_family": "T4x",\n  "display_name": "Yealink T4x Custom",\n  "config_format": "cfg",\n  "content_type": "text/plain",\n  "filename_pattern": "{mac}.cfg",\n  "supported_models": ["T48G"],\n  "max_line_keys": 29,\n  "type_mapping": {"line": 15, "blf": 16, "speed_dial": 13},\n  "categories": [\n    {"id": "sip", "label": "SIP & Registration", "icon": "📞", "order": 1}\n  ],\n  "variables": [\n    {"name": "sip_server", "category": "sip", "description": "SIP server address", "example": "pbx.example.com", "default": ""}\n  ]\n} }}\n#!version:1.0.0.1\n{{#lines}}\naccount.{{line_index}}.enable = 1\naccount.{{line_index}}.user_name = {{user_name}}\naccount.{{line_index}}.password = {{password}}\naccount.{{line_index}}.sip_server.1.address = {{sip_server}}\n{{/lines}}');
+        $('#templateFilename').val('yealink_t4x_custom.mustache');
+        setTemplateEditorMode('');
+        $('#importFeedback').html('<div class="alert alert-info">Mini stub loaded — edit META/body then Save as New.</div>');
+    });
 }
 
 // ===================== ADMIN =====================
@@ -2100,6 +2531,34 @@ function restartPBX() {
     if (!confirm('Restart PBX? This will interrupt active calls!')) return;
     $('#pbxStatus').html('<i class="fa fa-spinner fa-spin"></i> Restarting...');
     ajax('restart_pbx', {type:'restart'}, function(r) { $('#pbxStatus').html('<span class="'+(r.status?'text-success':'text-danger')+'">'+esc(r.message)+'</span>'); });
+}
+
+function resyncAllHandsets() {
+    var force = $('#resyncForceReboot').is(':checked') ? 1 : 0;
+    var msg = force
+        ? 'Force-reboot ALL Quick-Provisioner handsets via SIP check-sync?'
+        : 'Send SIP check-sync to ALL Quick-Provisioner handsets?\n\nRegistered phones will re-fetch config.';
+    if (!confirm(msg)) return;
+    var $btn = $('#resyncAllBtn');
+    $btn.prop('disabled', true);
+    $('#resyncAllStatus').html('<i class="fa fa-spinner fa-spin"></i> Sending check-sync…');
+    ajax('resync_all_devices', {force_reboot: force}, function(r) {
+        $btn.prop('disabled', false);
+        if (!r.status) {
+            $('#resyncAllStatus').html('<div class="alert alert-danger">' + esc(r.message || 'Failed') + '</div>');
+            return;
+        }
+        var html = '<div class="alert alert-' + (r.failed ? 'warning' : 'success') + '" style="margin-bottom:8px;">' + esc(r.message || 'Done') + '</div>';
+        if (r.results && r.results.length) {
+            html += '<table class="table table-condensed table-striped" style="margin:0;"><thead><tr><th>Ext</th><th>Model</th><th>Result</th></tr></thead><tbody>';
+            r.results.forEach(function(row) {
+                html += '<tr><td>' + esc(row.extension || '—') + '</td><td>' + esc(row.model || '') + '</td>';
+                html += '<td class="' + (row.ok ? 'text-success' : 'text-danger') + '">' + esc(row.ok ? (row.output || 'OK') : (row.output || 'Failed')) + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        $('#resyncAllStatus').html(html);
+    });
 }
 
 function checkForUpdates() {

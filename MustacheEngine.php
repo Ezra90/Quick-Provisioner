@@ -382,7 +382,12 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $provUser        = $device['prov_username'] ?? '';
     $provPass        = $device['prov_password'] ?? '';
     $securityPin     = $device['security_pin'] ?? '';
-    $adminPassword   = $custom_options['admin_password'] ?? '';
+    // Poly refuses to keep factory admin "456" and nags until a non-default password
+    // is applied via device.auth.localAdminPassword.set=1. Default hotel lock: 789.
+    $adminPassword   = trim((string)($custom_options['admin_password'] ?? ''));
+    if ($adminPassword === '' || $adminPassword === '456') {
+        $adminPassword = '789';
+    }
 
     // Feature flags from custom options
     $autoAnswer       = $custom_options['auto_answer'] ?? '0';
@@ -390,6 +395,11 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
     $callWaiting      = $custom_options['call_waiting'] ?? '1';
     $webUiEnabled     = $custom_options['web_ui_enabled'] ?? '1';
     $cdpLldpEnabled   = $custom_options['cdp_lldp_enabled'] ?? '1';
+    $kidFriendly      = _qp_is_truthy($custom_options['kid_friendly_mode'] ?? '0');
+    if ($kidFriendly) {
+        // Restricted handsets never expose the phone web UI.
+        $webUiEnabled = '0';
+    }
     $screensaverTimeout = $custom_options['screensaver_timeout'] ?? '0';
     $voiceVlanId      = $custom_options['voice_vlan_id'] ?? '';
     $dataVlanId       = $custom_options['data_vlan_id'] ?? '';
@@ -668,6 +678,7 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'reg_expiry'        => $regExpiry,
         'security_pin'      => $securityPin,
         'admin_password'    => $adminPassword,
+        'has_admin_password'=> ($adminPassword !== ''),
         'wallpaper_url'     => $wallpaperUrl,
         'provisioning_url'  => $provisioningUrl,
         'provisioning_base' => $provisioningBase,
@@ -731,6 +742,8 @@ function qp_build_provisioning_context($device, $meta, $server_info) {
         'is_auto_answer'       => _qp_is_truthy($autoAnswer),
         'is_dnd_enabled'       => _qp_is_truthy($dndEnabled),
         'is_call_waiting'      => _qp_is_truthy($callWaiting),
+        'is_kid_friendly'      => $kidFriendly,
+        'kid_friendly_mode'    => $kidFriendly ? '1' : '0',
 
         // Structured arrays
         'lines'             => $lines,
@@ -1108,6 +1121,10 @@ function qp_save_phonebook_for_device(array $device, array $contacts = null) {
 
 /**
  * Module-level settings (kvstore via BMO helpers).
+ *
+ * Note: FreePBX::Quickprovisioner() often fails in unauthenticated scripts
+ * (provision.php / media.php) with "Unable to locate BMO Class". Always fall
+ * back to a direct kvstore read so public handset fetches still see Admin settings.
  */
 function qp_get_global_settings() {
     $defaults = [
@@ -1122,10 +1139,73 @@ function qp_get_global_settings() {
                 $defaults[$k] = (string)$val;
             }
         }
-    } catch (Exception $e) {
-        // Module object unavailable during early bootstrap
+    } catch (Throwable $e) {
+        // BMO unavailable in public provision context — use SQL fallback below.
     }
+
+    if ($defaults['sip_server_host'] === '' || $defaults['sip_server_port'] === '') {
+        try {
+            $db = \FreePBX::Database();
+            $stmt = $db->query(
+                "SELECT `key`, `val` FROM kvstore_FreePBX_modules_Quickprovisioner
+                 WHERE `id` = 'noid' AND `key` IN ('sip_server_host','sip_server_port')"
+            );
+            if ($stmt) {
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $k = (string)($row['key'] ?? '');
+                    $v = trim((string)($row['val'] ?? ''));
+                    if ($k !== '' && $v !== '' && array_key_exists($k, $defaults) && $defaults[$k] === '') {
+                        $defaults[$k] = $v;
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
+    // Last resort for host: FreePBX SIP Settings → External Address (public DNS)
+    if ($defaults['sip_server_host'] === '') {
+        try {
+            $ext = \FreePBX::Sipsettings()->get('externip');
+            if (is_string($ext) && trim($ext) !== '') {
+                $defaults['sip_server_host'] = trim($ext);
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+
     return $defaults;
+}
+
+/**
+ * Persist a module setting to kvstore (works even when BMO class load fails).
+ */
+function qp_set_global_setting($key, $value) {
+    $key = (string)$key;
+    $value = (string)$value;
+    if (!in_array($key, ['sip_server_host', 'sip_server_port'], true)) {
+        return false;
+    }
+    try {
+        \FreePBX::Quickprovisioner()->setConfig($key, $value);
+    } catch (Throwable $e) {
+        // continue with SQL write
+    }
+    try {
+        $db = \FreePBX::Database();
+        $db->prepare(
+            "DELETE FROM kvstore_FreePBX_modules_Quickprovisioner WHERE `id` = 'noid' AND `key` = ?"
+        )->execute([$key]);
+        $db->prepare(
+            "INSERT INTO kvstore_FreePBX_modules_Quickprovisioner (`key`, `val`, `type`, `id`) VALUES (?, ?, NULL, 'noid')"
+        )->execute([$key, $value]);
+        return true;
+    } catch (Throwable $e) {
+        error_log('Quick-Provisioner: failed to persist setting ' . $key . ' - ' . $e->getMessage());
+        return false;
+    }
 }
 
 /**
@@ -1136,16 +1216,59 @@ function qp_default_dial_plan() {
 }
 
 /**
+ * Normalize a pasted host / URL into a bare hostname or IP for SIP/provisioning.
+ * Accepts: pbx.example.com | http://pbx.example.com | https://pbx.example.com/path
+ */
+function qp_normalize_server_host($raw) {
+    $host = trim((string)$raw);
+    if ($host === '') {
+        return '';
+    }
+    // Allow pasting a full URL — phones need host only for SIP, and we rebuild URLs ourselves.
+    if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $host)) {
+        $parts = parse_url($host);
+        if (is_array($parts) && !empty($parts['host'])) {
+            $host = $parts['host'];
+            if (!empty($parts['port'])) {
+                // IPv6 literals already use []; for host:port keep as host only (port is separate setting)
+            }
+        }
+    }
+    // Strip accidental path/query if someone pasted host/path without scheme
+    $host = preg_replace('#[/\\\\].*$#', '', $host);
+    // Strip trailing :port (leave IPv6 [addr] alone)
+    if ($host !== '' && $host[0] !== '[') {
+        $host = preg_replace('/:\d+$/', '', $host);
+    }
+    return trim($host);
+}
+
+/**
+ * Hostname used in phone-facing HTTP URLs (provision / media / directory).
+ * Prefer global SIP host when set so remote handsets get a public DNS name.
+ */
+function qp_public_http_host() {
+    $globals = qp_get_global_settings();
+    $configured = qp_normalize_server_host($globals['sip_server_host'] ?? '');
+    if ($configured !== '') {
+        return $configured;
+    }
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    $host = preg_replace('/:\d+$/', '', (string)$host);
+    return $host !== '' ? $host : '127.0.0.1';
+}
+
+/**
  * Resolve SIP registrar host: per-device custom_options.sip_server >
  * global sip_server_host > HTTP_HOST hostname > SERVER_ADDR.
  */
 function qp_resolve_sip_server(array $custom_options = []) {
     if (!empty($custom_options['sip_server'])) {
-        return trim((string)$custom_options['sip_server']);
+        return qp_normalize_server_host($custom_options['sip_server']);
     }
     $globals = qp_get_global_settings();
     if (!empty($globals['sip_server_host'])) {
-        return trim($globals['sip_server_host']);
+        return qp_normalize_server_host($globals['sip_server_host']);
     }
     $host = $_SERVER['HTTP_HOST'] ?? '';
     if ($host !== '') {
@@ -1182,7 +1305,7 @@ function qp_resolve_sip_port(array $custom_options = []) {
 function qp_build_provisioning_urls($mac) {
     $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$mac));
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    $host = qp_public_http_host();
     $script = "$protocol://$host/admin/modules/quickprovisioner/provision.php";
     return [
         'provisioning_base' => $script . '/',
@@ -1199,7 +1322,7 @@ function qp_build_phonebook_url($mac) {
         return '';
     }
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    $host = qp_public_http_host();
     return "$protocol://$host/admin/modules/quickprovisioner/provision.php?mac=$mac&type=phonebook";
 }
 
@@ -1208,7 +1331,7 @@ function qp_build_phonebook_url($mac) {
  */
 function qp_build_polycom_contacts_directory_url() {
     $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    $host = qp_public_http_host();
     // Trailing slash: phone appends {mac}-directory.xml
     return "$protocol://$host/admin/modules/quickprovisioner/provision.php/";
 }

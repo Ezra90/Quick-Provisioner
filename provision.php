@@ -243,16 +243,18 @@ function qp_serve_device_config($mac, $requested_filename = null) {
             // keep extension fallback
         }
     }
-    // Prefer explicit line-key label for the primary line when present
+    // Prefer an explicit primary line-key label only when the user set a real
+    // name. autoFillBtn1 defaults label to the extension number, which must NOT
+    // override FreePBX display names when the label is only the extension digits.
     if (!empty($device['keys_json'])) {
         $kj = json_decode($device['keys_json'], true);
         if (is_array($kj)) {
             foreach ($kj as $krow) {
                 if (!is_array($krow)) continue;
-                $kt = $krow['type'] ?? '';
+                $kt = strtolower((string)($krow['type'] ?? ''));
                 $ki = (int)($krow['index'] ?? 0);
                 $kl = trim((string)($krow['label'] ?? ''));
-                if ($kt === 'line' && $ki === 1 && $kl !== '') {
+                if ($kt === 'line' && $ki === 1 && $kl !== '' && $kl !== (string)$ext) {
                     $display_name = $kl;
                     break;
                 }
@@ -292,9 +294,10 @@ function qp_serve_device_config($mac, $requested_filename = null) {
     $wallpaper_url = '';
     if (!empty($device['wallpaper'])) {
         $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'];
+        $host = function_exists('qp_public_http_host') ? qp_public_http_host() : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
         $wallpaper_file = rawurlencode((string)$device['wallpaper']);
-        // Keep wallpaper URL query-free for maximum Poly firmware compatibility.
+        // Path-style URL (Poly-friendly). media.php infers model/insets from the
+        // device that owns this wallpaper so VVX1500 hotkeys don't cover the logo.
         $wallpaper_url = "$protocol://$host/admin/modules/quickprovisioner/media.php/$wallpaper_file";
     }
 

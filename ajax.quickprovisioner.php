@@ -201,6 +201,47 @@ if (!function_exists('qp_generate_prov_password')) {
         return rtrim(strtr(base64_encode(random_bytes(12)), '+/', 'AZ'), '=');
     }
 }
+if (!function_exists('qp_send_check_sync_notify')) {
+    /**
+     * Send SIP check-sync NOTIFY to a PJSIP (then chan_sip) endpoint.
+     * Prefers polycom-check-sync / polycom-reboot profiles from sip_notify_custom.conf.
+     *
+     * @return array{ok:bool,output:string,type:string}
+     */
+    function qp_send_check_sync_notify(string $ext, bool $forceReboot = false): array {
+        $ext = preg_replace('/[^0-9A-Za-z_\-]/', '', $ext);
+        if ($ext === '') {
+            return ['ok' => false, 'output' => 'No extension', 'type' => ''];
+        }
+        $types = $forceReboot
+            ? ['polycom-reboot', 'reboot-now', 'polycom-check-sync', 'check-sync']
+            : ['polycom-check-sync', 'polycom-check-cfg', 'check-sync'];
+        $last = ['ok' => false, 'output' => '', 'type' => ''];
+        foreach ($types as $type) {
+            $out = [];
+            $code = 0;
+            exec('asterisk -rx ' . escapeshellarg("pjsip send notify {$type} endpoint {$ext}") . ' 2>&1', $out, $code);
+            $text = trim(implode("\n", $out));
+            $last = ['ok' => false, 'output' => $text, 'type' => $type];
+            $bad = ($code !== 0)
+                || stripos($text, 'failed') !== false
+                || stripos($text, 'unable') !== false
+                || stripos($text, 'not found') !== false
+                || stripos($text, 'unknown') !== false;
+            if (!$bad) {
+                return ['ok' => true, 'output' => $text !== '' ? $text : "NOTIFY {$type} sent", 'type' => $type];
+            }
+        }
+        // Legacy chan_sip fallback
+        $out = [];
+        $code = 0;
+        $sipType = $forceReboot ? 'reboot-now' : 'check-sync';
+        exec('asterisk -rx ' . escapeshellarg("sip notify {$sipType} {$ext}") . ' 2>&1', $out, $code);
+        $text = trim(implode("\n", $out));
+        $ok = ($code === 0 && stripos($text, 'failed') === false && stripos($text, 'unable') === false);
+        return ['ok' => $ok, 'output' => $text, 'type' => 'sip:' . $sipType];
+    }
+}
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -337,6 +378,11 @@ switch ($action) {
                 $params = [$form['mac'], $form['model'], $form['extension'], $wallpaper, $wallpaper_mode, $security_pin, $keys_json, $contacts_json, $custom_options_json, $custom_template_override, $prov_username, $prov_password, $custom_sip_secret];
             }
             qp_db_exec($sql, $params);
+            if ($id) {
+                $saved_id = (int)$id;
+            } else {
+                $saved_id = (int)qp_pdo()->lastInsertId();
+            }
             // Persist vendor phonebook XML for this MAC
             $saved = [
                 'mac' => $form['mac'],
@@ -346,7 +392,7 @@ switch ($action) {
             ];
             qp_save_phonebook_for_device($saved, $contacts_norm);
             \FreePBX::create()->Logger->log(FPBX_LOG_INFO, "Device saved: MAC=" . $form['mac']);
-            $response = ['status' => true];
+            $response = ['status' => true, 'id' => $saved_id];
         } catch (Exception $e) {
             error_log("Quick-Provisioner: Error saving device - " . $e->getMessage());
             $response['message'] = 'Database error: Failed to save device';
@@ -385,10 +431,13 @@ switch ($action) {
         break;
 
     case 'save_global_settings':
-        $host = trim((string)($_POST['sip_server_host'] ?? ''));
+        $host = function_exists('qp_normalize_server_host')
+            ? qp_normalize_server_host($_POST['sip_server_host'] ?? '')
+            : trim((string)($_POST['sip_server_host'] ?? ''));
         $port = trim((string)($_POST['sip_server_port'] ?? ''));
+        // Hostnames, IPv4, IPv6 literals — reject paths/spaces after normalize
         if ($host !== '' && !preg_match('/^[A-Za-z0-9._:\-\[\]]+$/', $host)) {
-            $response['message'] = 'Invalid SIP server hostname';
+            $response['message'] = 'Invalid SIP server hostname (use host only, e.g. pbx.example.com)';
             break;
         }
         if ($port !== '' && !preg_match('/^\d{1,5}$/', $port)) {
@@ -396,9 +445,14 @@ switch ($action) {
             break;
         }
         try {
-            $mod = \FreePBX::Quickprovisioner();
-            $mod->setConfig('sip_server_host', $host);
-            $mod->setConfig('sip_server_port', $port);
+            if (function_exists('qp_set_global_setting')) {
+                qp_set_global_setting('sip_server_host', $host);
+                qp_set_global_setting('sip_server_port', $port);
+            } else {
+                $mod = \FreePBX::Quickprovisioner();
+                $mod->setConfig('sip_server_host', $host);
+                $mod->setConfig('sip_server_port', $port);
+            }
             $response = ['status' => true, 'settings' => qp_get_global_settings()];
         } catch (Exception $e) {
             $response['message'] = 'Failed to save settings: ' . $e->getMessage();
@@ -420,14 +474,33 @@ switch ($action) {
     case 'list_devices_with_secrets':
         $rows = qp_pdo()->query("SELECT * FROM quickprovisioner_devices ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
         $devices = [];
+        $nameCache = [];
         foreach ($rows as $row) {
-            $ext = $row['extension'];
-            [$secret, $secretSource] = qp_resolve_sip_secret((string)$ext, $row['custom_sip_secret'] ?? null);
+            $ext = (string)($row['extension'] ?? '');
+            [$secret, $secretSource] = qp_resolve_sip_secret($ext, $row['custom_sip_secret'] ?? null);
+
+            $displayName = '';
+            if ($ext !== '') {
+                if (array_key_exists($ext, $nameCache)) {
+                    $displayName = $nameCache[$ext];
+                } else {
+                    try {
+                        $userInfo = \FreePBX::Core()->getUser($ext);
+                        if ($userInfo && is_array($userInfo) && !empty($userInfo['name'])) {
+                            $displayName = (string)$userInfo['name'];
+                        }
+                    } catch (Exception $e) {
+                        // leave blank
+                    }
+                    $nameCache[$ext] = $displayName;
+                }
+            }
 
             $devices[] = [
                 'id' => $row['id'],
                 'mac' => $row['mac'],
                 'extension' => $row['extension'],
+                'display_name' => $displayName,
                 'model' => $row['model'],
                 'secret' => $secret,
                 'secret_source' => $secretSource
@@ -499,7 +572,7 @@ switch ($action) {
         $wpUrl = "";
         if (!empty($device['wallpaper'])) {
             $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? "https" : "http";
-            $host = $_SERVER['HTTP_HOST'];
+            $host = function_exists('qp_public_http_host') ? qp_public_http_host() : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
             $mac_clean = strtoupper(preg_replace('/[^A-F0-9]/', '', $device['mac']));
             $wpUrl = "$protocol://$host/admin/modules/quickprovisioner/media.php?mac=" . $mac_clean;
             // Append screen dimensions from Mustache META wallpaper_specs
@@ -586,7 +659,9 @@ switch ($action) {
         $resize_width = isset($_POST['resize_width']) ? intval($_POST['resize_width']) : 0;
         $resize_height = isset($_POST['resize_height']) ? intval($_POST['resize_height']) : 0;
         
-        // Auto-detect wallpaper dimensions from Mustache template META if model is specified
+        // Auto-detect wallpaper dimensions from Mustache template META if model is specified.
+        // Insets are NOT baked into the stored file — media.php applies layout from
+        // device custom_options (around_keys / full / custom) at serve / preview time.
         if ($resize_width === 0 && $resize_height === 0 && !empty($_POST['device_model'])) {
             $wp_model = basename($_POST['device_model']);
             $wp_template_file = qp_resolve_template_file($wp_model, $templates_dir);
@@ -596,17 +671,16 @@ switch ($action) {
                     $wp_meta = qp_parse_template_meta($wp_source);
                     if ($wp_meta !== null && !empty($wp_meta['wallpaper_specs'])) {
                         $wp_specs = $wp_meta['wallpaper_specs'];
-                        if (isset($wp_specs[$wp_model])) {
-                            $resize_width = (int)$wp_specs[$wp_model]['width'];
-                            $resize_height = (int)$wp_specs[$wp_model]['height'];
-                        } elseif (isset($wp_specs[strtoupper($wp_model)])) {
-                            $resize_width = (int)$wp_specs[strtoupper($wp_model)]['width'];
-                            $resize_height = (int)$wp_specs[strtoupper($wp_model)]['height'];
+                        $wp_spec = $wp_specs[$wp_model] ?? ($wp_specs[strtoupper($wp_model)] ?? null);
+                        if (is_array($wp_spec)) {
+                            $resize_width = (int)($wp_spec['width'] ?? 0);
+                            $resize_height = (int)($wp_spec['height'] ?? 0);
                         }
                     }
                 }
             }
         }
+        // Keep upload full-bleed so layout can change without re-uploading.
         
         if ($resize_width > 0 && $resize_height > 0 && function_exists('imagecreatefromjpeg')) {
             // Load source image
@@ -630,16 +704,37 @@ switch ($action) {
                 // Create destination image
                 $dest = imagecreatetruecolor($resize_width, $resize_height);
                 
-                // Preserve transparency for PNG/GIF
+                // Preserve transparency for PNG/GIF; otherwise fill dark (phone chrome)
                 if ($mime === 'image/png' || $mime === 'image/gif') {
                     imagealphablending($dest, false);
                     imagesavealpha($dest, true);
                     $transparent = imagecolorallocatealpha($dest, 0, 0, 0, 127);
                     imagefilledrectangle($dest, 0, 0, $resize_width, $resize_height, $transparent);
+                } else {
+                    $fill = imagecolorallocate($dest, 16, 16, 24);
+                    imagefilledrectangle($dest, 0, 0, $resize_width, $resize_height, $fill);
                 }
-                
-                // Resize with resampling for better quality
-                imagecopyresampled($dest, $source, 0, 0, 0, 0, $resize_width, $resize_height, $src_width, $src_height);
+
+                $il = 0;
+                $it = 0;
+                $ir = 0;
+                $ib = 0;
+                $content_w = max(1, $resize_width);
+                $content_h = max(1, $resize_height);
+                $src_ratio = $src_width / max(1, $src_height);
+                $content_ratio = $content_w / max(1, $content_h);
+                // Store full-bleed; media.php applies around_keys / custom margins at serve time.
+                if ($src_ratio > $content_ratio) {
+                    $nw = $content_w;
+                    $nh = (int)round($content_w / $src_ratio);
+                } else {
+                    $nh = $content_h;
+                    $nw = (int)round($content_h * $src_ratio);
+                }
+                $dx = (int)round(($content_w - $nw) / 2);
+                $dy = (int)round(($content_h - $nh) / 2);
+
+                imagecopyresampled($dest, $source, $dx, $dy, 0, 0, $nw, $nh, $src_width, $src_height);
                 
                 // Save resized image
                 $save_result = false;
@@ -842,7 +937,41 @@ switch ($action) {
         $source = file_get_contents($template_file);
         if ($source === false) { $response['message'] = 'Failed to read template'; break; }
         $meta = qp_parse_template_meta($source);
-        $response = ['status' => true, 'source' => $source, 'meta' => $meta];
+        $response = [
+            'status' => true,
+            'source' => $source,
+            'meta' => $meta,
+            'filename' => basename($template_file),
+        ];
+        break;
+
+    case 'get_template':
+        // Load a template by exact filename (Templates tab editor)
+        $filename = basename((string)($_REQUEST['filename'] ?? ''));
+        if ($filename === '') {
+            $response['message'] = 'No filename';
+            break;
+        }
+        if (strcasecmp(substr($filename, -9), '.mustache') !== 0) {
+            $filename .= '.mustache';
+        }
+        $path = $templates_dir . '/' . $filename;
+        if (!is_file($path)) {
+            $response['message'] = 'Template file not found: ' . $filename;
+            break;
+        }
+        $source = file_get_contents($path);
+        if ($source === false) {
+            $response['message'] = 'Failed to read template';
+            break;
+        }
+        $meta = qp_parse_template_meta($source);
+        $response = [
+            'status' => true,
+            'source' => $source,
+            'meta' => $meta,
+            'filename' => $filename,
+        ];
         break;
 
     case 'import_driver':
@@ -882,6 +1011,7 @@ switch ($action) {
         if (strcasecmp(substr($filename, -9), '.mustache') !== 0) {
             $filename .= '.mustache';
         }
+        // Keep known compound names like polycom_vvx.xml.mustache intact
         $path = $templates_dir . '/' . $filename;
         $result = qp_safe_write($path, $template_content);
         if ($result['status']) {
@@ -892,19 +1022,36 @@ switch ($action) {
         break;
 
     case 'delete_driver':
-        $model = basename($_POST['model'] ?? ''); // Sanitize to prevent path traversal
-        if (!$model) { $response['message'] = 'No model'; break; }
-        // Try resolving via qp_resolve_template_file first
-        $template_file = qp_resolve_template_file($model, $templates_dir);
-        if ($template_file) {
-            $result = qp_safe_delete($template_file);
-        } else {
-            // Fallback: try direct .mustache filename
-            $path = $templates_dir . '/' . $model . '.mustache';
-            $result = qp_safe_delete($path);
+        $filename = basename((string)($_POST['filename'] ?? ''));
+        $model = basename((string)($_POST['model'] ?? ''));
+        $template_file = null;
+        if ($filename !== '') {
+            if (strcasecmp(substr($filename, -9), '.mustache') !== 0) {
+                $filename .= '.mustache';
+            }
+            $candidate = $templates_dir . '/' . $filename;
+            if (is_file($candidate)) {
+                $template_file = $candidate;
+            }
         }
+        if (!$template_file && $model !== '') {
+            // Try resolving via qp_resolve_template_file first
+            $template_file = qp_resolve_template_file($model, $templates_dir);
+            if (!$template_file) {
+                // Fallback: try direct .mustache filename
+                $path = $templates_dir . '/' . $model . '.mustache';
+                if (is_file($path)) {
+                    $template_file = $path;
+                }
+            }
+        }
+        if (!$template_file) {
+            $response['message'] = 'Template not found';
+            break;
+        }
+        $result = qp_safe_delete($template_file);
         if ($result['status']) {
-            $response = ['status' => true];
+            $response = ['status' => true, 'filename' => basename($template_file)];
         } else {
             $response['message'] = $result['message'];
         }
@@ -920,6 +1067,7 @@ switch ($action) {
             $meta = ($source !== false) ? qp_parse_template_meta($source) : null;
             $list[] = [
                 'model'            => $model,
+                'filename'         => basename($file),
                 'display_name'     => ($meta['display_name'] ?? '') ?: $model,
                 'manufacturer'     => $meta['manufacturer'] ?? '',
                 'supported_models' => $meta['supported_models'] ?? [],
@@ -1302,16 +1450,16 @@ switch ($action) {
                 ]),
             ];
             $server_info = [
-                'server_ip' => '192.168.13.241',
+                'server_ip' => 'pbx.example.com',
                 'sip_port' => '5060',
                 'display_name' => 'Self Test',
                 'secret' => 'selftestsecret',
-                'wallpaper_url' => 'http://192.168.13.241/admin/modules/quickprovisioner/media.php/selftest.jpg',
-                'provisioning_url' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/0004f24dffff-prov.cfg',
-                'provisioning_base' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/',
-                'phonebook_url' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/0004f24dffff-directory.xml',
+                'wallpaper_url' => 'http://pbx.example.com/admin/modules/quickprovisioner/media.php/selftest.jpg',
+                'provisioning_url' => 'http://pbx.example.com/admin/modules/quickprovisioner/provision.php/0004f24dffff-prov.cfg',
+                'provisioning_base' => 'http://pbx.example.com/admin/modules/quickprovisioner/provision.php/',
+                'phonebook_url' => 'http://pbx.example.com/admin/modules/quickprovisioner/provision.php/0004f24dffff-directory.xml',
                 'phonebook_name' => 'Directory',
-                'polycom_contacts_directory' => 'http://192.168.13.241/admin/modules/quickprovisioner/provision.php/0004f24dffff-directory.xml',
+                'polycom_contacts_directory' => 'http://pbx.example.com/admin/modules/quickprovisioner/provision.php/0004f24dffff-directory.xml',
             ];
             $ctx = qp_build_provisioning_context($device, $meta, $server_info);
             $render_source = preg_replace('/\{\{!\s*META:\s*\{[\s\S]*\}\s*\}\}\s*/', '', $source);
@@ -1332,7 +1480,7 @@ switch ($action) {
                     'dialplan.digitmap="[1-9]xx|*xx.|*x.T|911|0T"',
                     'httpd.enabled="1"',
                     'attendant.reg="1"',
-                    'attendant.resourceList.1.address="sip:104@192.168.13.241"',
+                    'attendant.resourceList.1.address="sip:104@pbx.example.com"',
                     'attendant.resourceList.1.type="normal"',
                     'lineKey.2.category="BLF"',
                     'lineKey.2.index="0"',
@@ -1407,33 +1555,12 @@ switch ($action) {
         if (!$device) { $response['message'] = 'Device not found'; break; }
         $ext = preg_replace('/[^0-9A-Za-z_\-]/', '', (string)($device['extension'] ?? ''));
         if ($ext === '') { $response['message'] = 'Device has no extension'; break; }
-
-        $attempts = [];
-        $ok = false;
-        $cmds = [
-            'pjsip' => 'asterisk -rx ' . escapeshellarg("pjsip send notify check-sync endpoint {$ext}"),
-            'sip'   => 'asterisk -rx ' . escapeshellarg("sip notify check-sync {$ext}"),
-        ];
-        foreach ($cmds as $chan => $cmd) {
-            $out = [];
-            $code = 0;
-            exec($cmd . ' 2>&1', $out, $code);
-            $text = trim(implode("\n", $out));
-            $attempts[] = ['channel' => $chan, 'exit' => $code, 'output' => $text];
-            // Asterisk returns 0 even when endpoint missing sometimes; treat obvious success strings
-            if ($code === 0 && stripos($text, 'failed') === false && stripos($text, 'unable') === false && stripos($text, 'not found') === false) {
-                $ok = true;
-                break;
-            }
-            if ($code === 0 && $text === '') {
-                $ok = true;
-                break;
-            }
-        }
-        if ($ok) {
-            $response = ['status' => true, 'message' => "check-sync sent to {$ext}", 'attempts' => $attempts];
+        $force = !empty($_REQUEST['force_reboot']);
+        $result = qp_send_check_sync_notify($ext, $force);
+        if ($result['ok']) {
+            $response = ['status' => true, 'message' => "check-sync sent to {$ext} ({$result['type']})", 'notify' => $result];
         } else {
-            $response = ['status' => false, 'message' => "Failed to notify {$ext}. Is the phone registered?", 'attempts' => $attempts];
+            $response = ['status' => false, 'message' => "Failed to notify {$ext}. Is the phone registered?", 'notify' => $result];
         }
         break;
 
@@ -1441,6 +1568,7 @@ switch ($action) {
         // Regenerate/validate config (dynamic) then optionally notify the phone
         $id = $_REQUEST['id'] ?? null;
         $notify = !empty($_REQUEST['notify']);
+        $force = !empty($_REQUEST['force_reboot']);
         if (!$id || !is_numeric($id)) { $response['message'] = 'Invalid ID'; break; }
         $device = qp_db_exec("SELECT * FROM quickprovisioner_devices WHERE id=?", [(int)$id])->fetch(PDO::FETCH_ASSOC);
         if (!$device) { $response['message'] = 'Device not found'; break; }
@@ -1466,13 +1594,7 @@ switch ($action) {
         if ($notify) {
             $ext = preg_replace('/[^0-9A-Za-z_\-]/', '', (string)($device['extension'] ?? ''));
             if ($ext !== '') {
-                $out = [];
-                $code = 0;
-                exec('asterisk -rx ' . escapeshellarg("pjsip send notify check-sync endpoint {$ext}") . ' 2>&1', $out, $code);
-                if ($code !== 0) {
-                    exec('asterisk -rx ' . escapeshellarg("sip notify check-sync {$ext}") . ' 2>&1', $out, $code);
-                }
-                $notifyResult = ['exit' => $code, 'output' => trim(implode("\n", $out))];
+                $notifyResult = qp_send_check_sync_notify($ext, $force);
             }
         }
         $response = [
@@ -1481,6 +1603,60 @@ switch ($action) {
             'rebuilt_at' => $co['rebuilt_at'],
             'notify' => $notifyResult,
             'provision_hint' => 'provision.php?mac=' . rawurlencode($device['mac'] ?? ''),
+        ];
+        break;
+
+    case 'resync_all_devices':
+        // Mark all devices rebuilt, then SIP check-sync each registered extension
+        $force = !empty($_REQUEST['force_reboot']);
+        $rows = qp_pdo()->query("SELECT id, extension, mac, model, custom_options_json FROM quickprovisioner_devices ORDER BY extension")->fetchAll(PDO::FETCH_ASSOC);
+        $results = [];
+        $okCount = 0;
+        $failCount = 0;
+        foreach ($rows as $device) {
+            $id = (int)$device['id'];
+            $ext = preg_replace('/[^0-9A-Za-z_\-]/', '', (string)($device['extension'] ?? ''));
+            $co = [];
+            if (!empty($device['custom_options_json'])) {
+                $co = json_decode($device['custom_options_json'], true) ?: [];
+            }
+            $co['rebuilt_at'] = gmdate('c');
+            qp_db_exec(
+                "UPDATE quickprovisioner_devices SET custom_options_json=? WHERE id=?",
+                [json_encode($co), $id]
+            );
+
+            $entry = [
+                'id' => $id,
+                'extension' => $ext,
+                'mac' => $device['mac'] ?? '',
+                'model' => $device['model'] ?? '',
+                'ok' => false,
+                'output' => '',
+            ];
+            if ($ext === '') {
+                $entry['output'] = 'No extension';
+                $failCount++;
+                $results[] = $entry;
+                continue;
+            }
+            $nr = qp_send_check_sync_notify($ext, $force);
+            $entry['ok'] = !empty($nr['ok']);
+            $entry['output'] = trim(($nr['type'] ?? '') . ' ' . ($nr['output'] ?? ''));
+            if ($entry['ok']) {
+                $okCount++;
+            } else {
+                $failCount++;
+            }
+            $results[] = $entry;
+        }
+        $response = [
+            'status' => true,
+            'message' => "check-sync sent: {$okCount} ok, {$failCount} failed (of " . count($rows) . ')' . ($force ? ' [force reboot]' : ''),
+            'ok' => $okCount,
+            'failed' => $failCount,
+            'total' => count($rows),
+            'results' => $results,
         ];
         break;
 }

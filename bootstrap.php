@@ -17,7 +17,9 @@ require_once __DIR__ . '/MustacheEngine.php';
 function qp_bootstrap_base_url() {
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
     $scheme = $https ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1');
+    $host = function_exists('qp_public_http_host')
+        ? qp_public_http_host()
+        : ($_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_ADDR'] ?? '127.0.0.1'));
     $script = $_SERVER['SCRIPT_NAME'] ?? '/admin/modules/quickprovisioner/bootstrap.php';
     $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
     return $scheme . '://' . $host . $dir;

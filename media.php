@@ -100,18 +100,53 @@ if (empty($file) && !empty($mac)) {
     }
 }
 
+// If MAC omitted, infer device from a handset that uses this wallpaper file
+$inferred_custom_options = null;
+if (empty($mac) && !empty($file)) {
+    try {
+        $stmt = \FreePBX::Database()->prepare(
+            "SELECT mac, model, custom_options_json FROM quickprovisioner_devices WHERE wallpaper = ? OR wallpaper LIKE ? ORDER BY id DESC LIMIT 1"
+        );
+        $base = basename((string)$file);
+        $stmt->execute([$base, '%/' . $base]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            if (empty($mac) && !empty($row['mac'])) {
+                $mac = strtoupper(preg_replace('/[^A-Fa-f0-9]/', '', (string)$row['mac']));
+            }
+            if (!empty($row['custom_options_json'])) {
+                $inferred_custom_options = $row['custom_options_json'];
+            }
+        }
+    } catch (Exception $e) {
+        // ignore
+    }
+}
+
 $path = __DIR__ . '/assets/uploads/' . basename($file);
 if (!file_exists($path) || empty($file)) {
     qp_media_placeholder();
 }
 
-if ($mac && ($req_w == 0 || $req_h == 0)) {
+$device_custom_options = [];
+if ($mac && ($req_w == 0 || $req_h == 0 || !isset($_GET['inset_right']))) {
     require_once __DIR__ . '/MustacheEngine.php';
-    $stmt = \FreePBX::Database()->prepare("SELECT model FROM quickprovisioner_devices WHERE mac=?");
+    $stmt = \FreePBX::Database()->prepare("SELECT model, custom_options_json FROM quickprovisioner_devices WHERE mac=?");
     $stmt->execute([$mac]);
     $device = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($device) {
         $model = basename($device['model']);
+        if (!empty($device['custom_options_json'])) {
+            $decoded = json_decode($device['custom_options_json'], true);
+            if (is_array($decoded)) {
+                $device_custom_options = $decoded;
+            }
+        } elseif (!empty($inferred_custom_options)) {
+            $decoded = json_decode($inferred_custom_options, true);
+            if (is_array($decoded)) {
+                $device_custom_options = $decoded;
+            }
+        }
         $template_file = qp_resolve_template_file($model, __DIR__ . '/templates');
         if ($template_file) {
             $source = file_get_contents($template_file);
@@ -125,16 +160,45 @@ if ($mac && ($req_w == 0 || $req_h == 0)) {
                 if ($spec) {
                     if ($req_w == 0) $req_w = $spec['width'] ?? 800;
                     if ($req_h == 0) $req_h = $spec['height'] ?? 480;
+                    $inset_left = (int)($spec['inset_left'] ?? 0);
+                    $inset_top = (int)($spec['inset_top'] ?? 0);
+                    $inset_right = (int)($spec['inset_right'] ?? 0);
+                    $inset_bottom = (int)($spec['inset_bottom'] ?? 0);
                 }
             }
         }
+
+        // Device Wallpaper tab: around_keys (META defaults) | full | custom margins
+        $layout = $device_custom_options['wallpaper_layout'] ?? 'around_keys';
+        if ($layout === 'full') {
+            $inset_left = 0;
+            $inset_top = 0;
+            $inset_right = 0;
+            $inset_bottom = 0;
+        } elseif ($layout === 'custom') {
+            $inset_left = max(0, (int)($device_custom_options['wallpaper_inset_left'] ?? $inset_left ?? 0));
+            $inset_top = max(0, (int)($device_custom_options['wallpaper_inset_top'] ?? $inset_top ?? 0));
+            $inset_right = max(0, (int)($device_custom_options['wallpaper_inset_right'] ?? $inset_right ?? 0));
+            $inset_bottom = max(0, (int)($device_custom_options['wallpaper_inset_bottom'] ?? $inset_bottom ?? 0));
+        }
+        // around_keys: keep META insets (or zeros if model has none)
     }
 }
+
+// Optional explicit insets (preview / UI override META + device layout)
+if (isset($_GET['inset_left'])) $inset_left = max(0, (int)$_GET['inset_left']);
+if (isset($_GET['inset_top'])) $inset_top = max(0, (int)$_GET['inset_top']);
+if (isset($_GET['inset_right'])) $inset_right = max(0, (int)$_GET['inset_right']);
+if (isset($_GET['inset_bottom'])) $inset_bottom = max(0, (int)$_GET['inset_bottom']);
 
 if ($req_w == 0) $req_w = 800;
 if ($req_h == 0) $req_h = 480;
 $req_w = max(1, min(4096, $req_w));
 $req_h = max(1, min(4096, $req_h));
+$inset_left = $inset_left ?? 0;
+$inset_top = $inset_top ?? 0;
+$inset_right = $inset_right ?? 0;
+$inset_bottom = $inset_bottom ?? 0;
 
 try {
     $info = @getimagesize($path);
@@ -165,20 +229,36 @@ try {
 
     $dst = imagecreatetruecolor($req_w, $req_h);
 
+    // Dark fill under insets (matches VVX chrome around hotkeys)
+    $hasInsets = ($inset_left + $inset_top + $inset_right + $inset_bottom) > 0;
     if ($type == IMAGETYPE_PNG || $type == IMAGETYPE_GIF) {
-        imagealphablending($dst, false);
+        imagealphablending($dst, true);
         imagesavealpha($dst, true);
-        $trans = imagecolorallocatealpha($dst, 0, 0, 0, 127);
-        imagefill($dst, 0, 0, $trans);
+        if ($hasInsets) {
+            $fill = imagecolorallocate($dst, 16, 16, 24);
+            imagefill($dst, 0, 0, $fill);
+        } else {
+            imagealphablending($dst, false);
+            $trans = imagecolorallocatealpha($dst, 0, 0, 0, 127);
+            imagefill($dst, 0, 0, $trans);
+        }
     } else {
-        $black = imagecolorallocate($dst, 0, 0, 0);
+        $black = imagecolorallocate($dst, 16, 16, 24);
         imagefill($dst, 0, 0, $black);
     }
 
     $src_ratio = $orig_w / $orig_h;
-    $dst_ratio = $req_w / $req_h;
 
-    if ($mode === 'crop') {
+    // Content box: keep logos clear of VVX1500 right hotkeys / softkeys / status bar.
+    $content_w = max(1, $req_w - $inset_left - $inset_right);
+    $content_h = max(1, $req_h - $inset_top - $inset_bottom);
+    $content_ratio = $content_w / $content_h;
+
+    // Prefer fit-into-content when insets are set (hotel logos); else legacy full-bleed crop/fit.
+    $compose_mode = ($inset_left + $inset_top + $inset_right + $inset_bottom) > 0 ? 'fit' : $mode;
+
+    if ($compose_mode === 'crop') {
+        $dst_ratio = $req_w / $req_h;
         if ($src_ratio > $dst_ratio) {
             $nh = $req_h;
             $nw = $req_h * $src_ratio;
@@ -186,19 +266,21 @@ try {
             $nw = $req_w;
             $nh = $req_w / $src_ratio;
         }
+        $x = (int)round(($req_w - $nw) / 2);
+        $y = (int)round(($req_h - $nh) / 2);
     } else {
-        if ($src_ratio > $dst_ratio) {
-            $nw = $req_w;
-            $nh = $req_w / $src_ratio;
+        // Fit entire image inside the content rectangle (letterbox within safe area).
+        if ($src_ratio > $content_ratio) {
+            $nw = $content_w;
+            $nh = $content_w / $src_ratio;
         } else {
-            $nh = $req_h;
-            $nw = $req_h * $src_ratio;
+            $nh = $content_h;
+            $nw = $content_h * $src_ratio;
         }
+        $x = (int)round($inset_left + ($content_w - $nw) / 2);
+        $y = (int)round($inset_top + ($content_h - $nh) / 2);
     }
 
-    // GD imagecopyresampled expects integer coordinates/sizes.
-    $x = (int)round(($req_w - $nw) / 2);
-    $y = (int)round(($req_h - $nh) / 2);
     $nw = (int)round($nw);
     $nh = (int)round($nh);
 
