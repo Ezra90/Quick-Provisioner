@@ -246,13 +246,19 @@
     device.auth.localAdminPassword.set="1"
     device.auth.localAdminPassword="{{admin_password}}"
 {{/has_admin_password}}
+    device.prov.serverName.set="1"
     device.prov.serverName="{{provisioning_base}}"
+    device.prov.serverType.set="1"
     device.prov.serverType="HTTP"
+    device.prov.user.set="1"
     device.prov.user="{{provision_user}}"
+    device.prov.password.set="1"
     device.prov.password="{{provision_pass}}"
-    <!-- 2 = use Server menu / configured serverName only — ignore DHCP opt 66/160 (Telstra DMS). -->
+    <!-- 2 = Static/Server menu only — ignore DHCP opt 66/160 (Telstra DMS on cellular). -->
     device.dhcp.bootSrvUseOpt.set="1"
     device.dhcp.bootSrvUseOpt="2"
+    device.dhcp.bootSrvOpt.set="1"
+    device.dhcp.bootSrvOpt="160"
     device.prov.ztpEnabled.set="1"
     device.prov.ztpEnabled="0"
 {{#has_polycom_contacts_directory}}
@@ -278,12 +284,20 @@
   />
 {{/has_firmware}}
 {{^has_firmware}}
-  <!-- Freeze software: clear any prior updater URL and do not auto-upgrade on boot. -->
+  <!-- Freeze software: clear any prior updater URL (incl. Telstra DMS) and do not auto-upgrade. -->
   <UPDATER
     updater.autoPowerUp.set="1"
     updater.autoPowerUp="0"
     updater.application.url.set="1"
     updater.application.url=""
+    updater.server.type.set="1"
+    updater.server.type="0"
+    updater.server.root.set="1"
+    updater.server.root=""
+    updater.server.user.set="1"
+    updater.server.user=""
+    updater.server.password.set="1"
+    updater.server.password=""
   />
 {{/has_firmware}}
 </PHONE_CONFIG>

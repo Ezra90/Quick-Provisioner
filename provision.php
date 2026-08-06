@@ -447,6 +447,8 @@ if (strcasecmp($dir_basename, '000000000000.cfg') === 0) {
         ? (qp_build_provisioning_urls('000000000000')['provisioning_base'] ?? '')
         : '';
     $qsetupOn = (function_exists('qp_lan_open_auth') && qp_lan_open_auth()) ? '0' : '1';
+    $lanOpenLocal = (function_exists('qp_lan_open_auth') && qp_lan_open_auth());
+    $bootOpt = $lanOpenLocal ? '1' : '2';
     header('Content-Type: application/xml');
     header('Content-Disposition: inline; filename="000000000000.cfg"');
     echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n";
@@ -454,7 +456,12 @@ if (strcasecmp($dir_basename, '000000000000.cfg') === 0) {
     echo "  <APPLICATION APP_FILE_PATH=\"sip.ld\" CONFIG_FILES=\"[PHONE_MAC_ADDRESS]-prov.cfg\" />\n";
     echo "  <prov prov.quickSetup.enabled=\"{$qsetupOn}\" prov.quickSetup.limitServerDetails=\"1\" />\n";
     if ($base !== '') {
-        echo "  <DEVICE device.set=\"1\" device.prov.serverName=\"" . htmlspecialchars($base, ENT_QUOTES) . "\" device.prov.serverType=\"HTTP\" />\n";
+        echo "  <DEVICE device.set=\"1\" device.prov.serverName=\"" . htmlspecialchars($base, ENT_QUOTES) . "\" device.prov.serverType=\"HTTP\""
+            . " device.dhcp.bootSrvUseOpt.set=\"1\" device.dhcp.bootSrvUseOpt=\"{$bootOpt}\""
+            . " device.prov.ztpEnabled.set=\"1\" device.prov.ztpEnabled=\"0\" />\n";
+    }
+    if (!$lanOpenLocal) {
+        echo "  <UPDATER updater.autoPowerUp.set=\"1\" updater.autoPowerUp=\"0\" updater.application.url.set=\"1\" updater.application.url=\"\" />\n";
     }
     echo "</PHONE_CONFIG>\n";
     qp_log_access(200, $request_uri_for_dir, null, null, 'config');

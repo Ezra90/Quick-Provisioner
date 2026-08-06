@@ -1463,7 +1463,16 @@ function saveDevice() {
             currentDeviceId = r.id;
         }
         loadDevices();
-        alert('Saved!');
+        // Push cfg to the handset (SIP check-sync). Needed after label/wallpaper edits.
+        var id = r.id || currentDeviceId;
+        if (id) {
+            ajax('rebuild_device', {id: id, notify: 1}, function(nr) {
+                var extra = (nr && nr.status) ? ' Handset notified to re-download.' : ' Saved locally — use Rebuild+bolt if the phone does not update.';
+                alert('Saved!' + extra);
+            });
+        } else {
+            alert('Saved!');
+        }
     });
 }
 

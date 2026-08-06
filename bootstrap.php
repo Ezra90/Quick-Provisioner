@@ -172,15 +172,25 @@ if ($vendor === 'polycom') {
     echo "    prov.quickSetup.enabled=\"{$qsetupOn}\"\n";
     echo "    prov.quickSetup.limitServerDetails=\"1\"\n";
     echo "  />\n";
+    // lan_open: honour DHCP 66/160 so UniFi can point phones at us for first bring-up.
+    // Otherwise UseOpt=2 — never let Telstra (or any carrier) DHCP steal provisioning/firmware.
+    $bootOpt = $lanOpenLocal ? '1' : '2';
     echo "  <DEVICE\n";
     echo "    device.set=\"1\"\n";
     echo "    device.prov.serverName=\"{$provisionBase}\"\n";
     echo "    device.prov.serverType=\"HTTP\"\n";
     echo "    device.dhcp.bootSrvUseOpt.set=\"1\"\n";
-    echo "    device.dhcp.bootSrvUseOpt=\"1\"\n";
+    echo "    device.dhcp.bootSrvUseOpt=\"{$bootOpt}\"\n";
     echo "    device.prov.ztpEnabled.set=\"1\"\n";
     echo "    device.prov.ztpEnabled=\"0\"\n";
     echo "  />\n";
+    // Explicit firmware freeze even in bootstrap (carrier DMS often injects updater URLs).
+    if (!$lanOpenLocal) {
+        echo "  <UPDATER\n";
+        echo "    updater.autoPowerUp.set=\"1\" updater.autoPowerUp=\"0\"\n";
+        echo "    updater.application.url.set=\"1\" updater.application.url=\"\"\n";
+        echo "  />\n";
+    }
     echo "</PHONE_CONFIG>\n";
     exit;
 }
